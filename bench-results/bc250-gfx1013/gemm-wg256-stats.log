@@ -1,0 +1,43 @@
+ggml_vulkan: Found 1 Vulkan devices:
+ggml_vulkan: 0 = AMD BC-250 (RADV GFX1013) (radv) | uma: 1 | rebar: 1 | fp16: 1 | bf16: 0 | fp4: 0 | warp size: 32 | shared memory: 65536 | int dot: 0 | matrix cores: none
+Testing 3 devices
+
+Backend 1/3: Vulkan0
+  Device description: AMD BC-250 (RADV GFX1013)
+  Device memory: 15712 MB (15694 MB free)
+
+ggml_vulkan: pipeline stats for matmul_quant_f32_f16acc_aligned_2:
+ggml_vulkan:   Driver pipeline hash: 11574667803434987220
+ggml_vulkan:   SGPRs: 128
+ggml_vulkan:   VGPRs: 128
+ggml_vulkan:   Spilled SGPRs: 0
+ggml_vulkan:   Spilled VGPRs: 0
+ggml_vulkan:   Code size: 18448
+ggml_vulkan:   LDS size: 17408
+ggml_vulkan:   Scratch size: 0
+ggml_vulkan:   Subgroups per SIMD: 8
+ggml_vulkan:   Combined inputs: 0
+ggml_vulkan:   Combined outputs: 0
+ggml_vulkan:   Hash: 198023774
+ggml_vulkan:   Instructions: 2691
+ggml_vulkan:   Copies: 419
+ggml_vulkan:   Branches: 66
+ggml_vulkan:   Latency: 31775
+ggml_vulkan:   Inverse Throughput: 22796
+ggml_vulkan:   VMEM Clause: 66
+ggml_vulkan:   SMEM Clause: 67
+ggml_vulkan:   Pre-Sched SGPRs: 25
+ggml_vulkan:   Pre-Sched VGPRs: 100
+ggml_vulkan:   VALU: 1732
+ggml_vulkan:   SALU: 364
+ggml_vulkan:   VMEM: 76
+ggml_vulkan:   SMEM: 70
+ggml_vulkan:   VOPD: 0
+  MUL_MAT(name=q8_0_m12288_n512_k4096,type=f32,ne=[12288,512,1,1],op_params=[],sources=q8_0[4096,12288,1,1],f32[4096,512,1,1]):                  395 runs -  4770.51 us/run -    84992 kB/run - [1;34m  16.99 GB/s[0m
+  Backend Vulkan0: [1;32mOK[0m
+Backend 2/3: BLAS
+  Skipping
+Backend 3/3: CPU
+  Skipping
+3/3 backends passed
+[1;32mOK[0m

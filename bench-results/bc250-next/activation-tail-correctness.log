@@ -1,0 +1,50 @@
+ggml_vulkan: Found 1 Vulkan devices:
+ggml_vulkan: 0 = AMD BC-250 (RADV GFX1013) (radv) | uma: 1 | rebar: 1 | fp16: 1 | bf16: 0 | fp4: 0 | warp size: 32 | shared memory: 65536 | int dot: 0 | matrix cores: none
+Testing 3 devices
+
+Backend 1/3: Vulkan0
+  Device description: AMD BC-250 (RADV GFX1013)
+  Device memory: 15712 MB (15694 MB free)
+
+  MUL_MAT(name=f16act_edge_f32_m129_n1_k8192,type=f32,ne=[129,1,1,1],op_params=[],sources=f32[8192,129,1,1],f16[8192,1,1,1]): [1;32mOK[0m
+  MUL_MAT(name=f16act_edge_f32_m129_n4_k8192,type=f32,ne=[129,4,1,1],op_params=[],sources=f32[8192,129,1,1],f16[8192,4,1,1]): [1;32mOK[0m
+  MUL_MAT(name=f16act_edge_f16_m129_n1_k8192,type=f32,ne=[129,1,1,1],op_params=[],sources=f16[8192,129,1,1],f16[8192,1,1,1]): [1;32mOK[0m
+  MUL_MAT(name=f16act_edge_f16_m129_n4_k8192,type=f32,ne=[129,4,1,1],op_params=[],sources=f16[8192,129,1,1],f16[8192,4,1,1]): [1;32mOK[0m
+  MUL_MAT(name=f16act_edge_bf16_m129_n1_k8192,type=f32,ne=[129,1,1,1],op_params=[],sources=bf16[8192,129,1,1],f16[8192,1,1,1]): not supported [Vulkan0, CPU] 
+  MUL_MAT(name=f16act_edge_bf16_m129_n4_k8192,type=f32,ne=[129,4,1,1],op_params=[],sources=bf16[8192,129,1,1],f16[8192,4,1,1]): not supported [Vulkan0, CPU] 
+  MUL_MAT(name=f16act_edge_q4_0_m129_n1_k8192,type=f32,ne=[129,1,1,1],op_params=[],sources=q4_0[8192,129,1,1],f16[8192,1,1,1]): not supported [CPU] 
+  MUL_MAT(name=f16act_edge_q4_0_m129_n4_k8192,type=f32,ne=[129,4,1,1],op_params=[],sources=q4_0[8192,129,1,1],f16[8192,4,1,1]): not supported [CPU] 
+  MUL_MAT(name=f16act_edge_q4_1_m129_n1_k8192,type=f32,ne=[129,1,1,1],op_params=[],sources=q4_1[8192,129,1,1],f16[8192,1,1,1]): not supported [CPU] 
+  MUL_MAT(name=f16act_edge_q4_1_m129_n4_k8192,type=f32,ne=[129,4,1,1],op_params=[],sources=q4_1[8192,129,1,1],f16[8192,4,1,1]): not supported [CPU] 
+  MUL_MAT(name=f16act_edge_q5_0_m129_n1_k8192,type=f32,ne=[129,1,1,1],op_params=[],sources=q5_0[8192,129,1,1],f16[8192,1,1,1]): not supported [CPU] 
+  MUL_MAT(name=f16act_edge_q5_0_m129_n4_k8192,type=f32,ne=[129,4,1,1],op_params=[],sources=q5_0[8192,129,1,1],f16[8192,4,1,1]): not supported [CPU] 
+  MUL_MAT(name=f16act_edge_q5_1_m129_n1_k8192,type=f32,ne=[129,1,1,1],op_params=[],sources=q5_1[8192,129,1,1],f16[8192,1,1,1]): not supported [CPU] 
+  MUL_MAT(name=f16act_edge_q5_1_m129_n4_k8192,type=f32,ne=[129,4,1,1],op_params=[],sources=q5_1[8192,129,1,1],f16[8192,4,1,1]): not supported [CPU] 
+  MUL_MAT(name=f16act_edge_q8_0_m129_n1_k8192,type=f32,ne=[129,1,1,1],op_params=[],sources=q8_0[8192,129,1,1],f16[8192,1,1,1]): not supported [CPU] 
+  MUL_MAT(name=f16act_edge_q8_0_m129_n4_k8192,type=f32,ne=[129,4,1,1],op_params=[],sources=q8_0[8192,129,1,1],f16[8192,4,1,1]): not supported [CPU] 
+  MUL_MAT(name=f16act_edge_q4_k_m129_n1_k8192,type=f32,ne=[129,1,1,1],op_params=[],sources=q4_K[8192,129,1,1],f16[8192,1,1,1]): not supported [CPU] 
+  MUL_MAT(name=f16act_edge_q4_k_m129_n4_k8192,type=f32,ne=[129,4,1,1],op_params=[],sources=q4_K[8192,129,1,1],f16[8192,4,1,1]): not supported [CPU] 
+  MUL_MAT(name=f16act_edge_q5_k_m129_n1_k8192,type=f32,ne=[129,1,1,1],op_params=[],sources=q5_K[8192,129,1,1],f16[8192,1,1,1]): not supported [CPU] 
+  MUL_MAT(name=f16act_edge_q5_k_m129_n4_k8192,type=f32,ne=[129,4,1,1],op_params=[],sources=q5_K[8192,129,1,1],f16[8192,4,1,1]): not supported [CPU] 
+  MUL_MAT(name=f16act_edge_iq4_nl_m129_n1_k8192,type=f32,ne=[129,1,1,1],op_params=[],sources=iq4_nl[8192,129,1,1],f16[8192,1,1,1]): not supported [CPU] 
+  MUL_MAT(name=f16act_edge_iq4_nl_m129_n4_k8192,type=f32,ne=[129,4,1,1],op_params=[],sources=iq4_nl[8192,129,1,1],f16[8192,4,1,1]): not supported [CPU] 
+  MUL_MAT(name=odd_f32_m129_n1_k1025,type=f32,ne=[129,1,1,1],op_params=[],sources=f32[1025,129,1,1],f32[1025,1,1,1]): [1;32mOK[0m
+  MUL_MAT(name=odd_f32_m129_n4_k1025,type=f32,ne=[129,4,1,1],op_params=[],sources=f32[1025,129,1,1],f32[1025,4,1,1]): [1;32mOK[0m
+  MUL_MAT(name=odd_f32_m129_n1_k4097,type=f32,ne=[129,1,1,1],op_params=[],sources=f32[4097,129,1,1],f32[4097,1,1,1]): [1;32mOK[0m
+  MUL_MAT(name=odd_f32_m129_n4_k4097,type=f32,ne=[129,4,1,1],op_params=[],sources=f32[4097,129,1,1],f32[4097,4,1,1]): [1;32mOK[0m
+  MUL_MAT(name=odd_f16_m129_n1_k1025,type=f32,ne=[129,1,1,1],op_params=[],sources=f16[1025,129,1,1],f32[1025,1,1,1]): [1;32mOK[0m
+  MUL_MAT(name=odd_f16_m129_n4_k1025,type=f32,ne=[129,4,1,1],op_params=[],sources=f16[1025,129,1,1],f32[1025,4,1,1]): [1;32mOK[0m
+  MUL_MAT(name=odd_f16_m129_n1_k4097,type=f32,ne=[129,1,1,1],op_params=[],sources=f16[4097,129,1,1],f32[4097,1,1,1]): [1;32mOK[0m
+  MUL_MAT(name=odd_f16_m129_n4_k4097,type=f32,ne=[129,4,1,1],op_params=[],sources=f16[4097,129,1,1],f32[4097,4,1,1]): [1;32mOK[0m
+  MUL_MAT(name=odd_bf16_m129_n1_k1025,type=f32,ne=[129,1,1,1],op_params=[],sources=bf16[1025,129,1,1],f32[1025,1,1,1]): [1;32mOK[0m
+  MUL_MAT(name=odd_bf16_m129_n4_k1025,type=f32,ne=[129,4,1,1],op_params=[],sources=bf16[1025,129,1,1],f32[1025,4,1,1]): [1;32mOK[0m
+  MUL_MAT(name=odd_bf16_m129_n1_k4097,type=f32,ne=[129,1,1,1],op_params=[],sources=bf16[4097,129,1,1],f32[4097,1,1,1]): [1;32mOK[0m
+  MUL_MAT(name=odd_bf16_m129_n4_k4097,type=f32,ne=[129,4,1,1],op_params=[],sources=bf16[4097,129,1,1],f32[4097,4,1,1]): [1;32mOK[0m
+  16/16 tests passed
+  Backend Vulkan0: [1;32mOK[0m
+Backend 2/3: BLAS
+  Skipping
+Backend 3/3: CPU
+  Skipping
+3/3 backends passed
+[1;32mOK[0m

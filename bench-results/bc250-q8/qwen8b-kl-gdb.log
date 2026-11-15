@@ -1,0 +1,105 @@
+[New LWP 4680]
+[New LWP 4681]
+[New LWP 4682]
+[New LWP 4683]
+[New LWP 4684]
+[New LWP 4685]
+[New LWP 4686]
+[New LWP 4687]
+[New LWP 4688]
+[New LWP 4689]
+[New LWP 4690]
+[New LWP 4691]
+[LWP 4691 exited]
+[New LWP 4692]
+[New LWP 4693]
+[New LWP 4694]
+0.00.739.348 W load: control-looking token: 128247 '</s>' was not control-type; this is probably a bug in the model. its type will be overridden
+0.13.123.759 I cmn          init: llama threadpool init, n_threads = 6
+0.13.184.768 I 
+0.13.184.813 I system_info: n_threads = 6 (n_threads_batch = 6) / 12 | CPU : SSE3 = 1 | SSSE3 = 1 | AVX = 1 | AVX2 = 1 | F16C = 1 | FMA = 1 | BMI2 = 1 | LLAMAFILE = 1 | OPENMP = 1 | REPACK = 1 | 
+0.13.193.903 I kl_divergence: computing over 1 chunks, n_ctx=512, batch_size=1, n_seq=1
+0.27.303.328 I kl_divergence: 14.11 seconds per pass - ETA 0.23 minutes
+
+chunk             PPL               ln(PPL(Q)/PPL(base))          KL Divergence              Δp RMS            Same top p
+[New LWP 4787]
+[New LWP 4788]
+[New LWP 4789]
+[New LWP 4790]
+[New LWP 4791]
+[New LWP 4792]
+[New LWP 4793]
+[New LWP 4794]
+[New LWP 4795]
+[New LWP 4796]
+[New LWP 4797]
+[LWP 4796 exited]
+[LWP 4787 exited]
+[LWP 4797 exited]
+[LWP 4788 exited]
+[LWP 4789 exited]
+[LWP 4795 exited]
+[LWP 4793 exited]
+[LWP 4792 exited]
+[LWP 4794 exited]
+[LWP 4790 exited]
+   1[LWP 4791 exited]
+       2.8551 ±    0.4528       0.00000 ±       -nan      -0.00000 ±    0.00000     0.000 ±  0.000 %    100.000 ±  0.000 %
+
+====== Perplexity statistics ======
+Mean PPL(Q)                   :   2.855109 ±   0.452787
+Mean PPL(base)                :   2.855107 ±   0.452786
+Cor(ln(PPL(Q)), ln(PPL(base))): 100.00%
+Mean ln(PPL(Q)/PPL(base))     :   0.000001 ±       -nan
+Mean PPL(Q)/PPL(base)         :   1.000001 ±       -nan
+Mean PPL(Q)-PPL(base)         :   0.000002 ±       -nan
+
+====== KL divergence statistics ======
+Mean    KLD:  -0.000001 ±   0.000000
+Maximum KLD:   0.000021
+99.9%   KLD:   0.000020
+99.0%   KLD:   0.000016
+95.0%   KLD:   0.000008
+90.0%   KLD:   0.000003
+Median  KLD:   0.000000
+10.0%   KLD:  -0.000004
+ 5.0%   KLD:  -0.000009
+ 1.0%   KLD:  -0.000024
+ 0.1%   KLD:  -0.000035
+Minimum KLD:  -0.000037
+
+====== Token probability statistics ======
+Mean    Δp:  0.000 ± 0.000 %
+Maximum Δp:  0.003%
+99.9%   Δp:  0.003%
+99.0%   Δp:  0.001%
+95.0%   Δp:  0.000%
+90.0%   Δp:  0.000%
+75.0%   Δp:  0.000%
+Median  Δp:  0.000%
+25.0%   Δp:  0.000%
+10.0%   Δp: -0.000%
+ 5.0%   Δp: -0.000%
+ 1.0%   Δp: -0.001%
+ 0.1%   Δp: -0.001%
+Minimum Δp: -0.001%
+RMS Δp    :  0.000 ± 0.000 %
+Same top p: 100.000 ± 0.000 %
+
+[LWP 4694 exited]
+[LWP 4693 exited]
+[LWP 4685 exited]
+[LWP 4690 exited]
+[LWP 4689 exited]
+[LWP 4688 exited]
+[LWP 4687 exited]
+[LWP 4686 exited]
+[LWP 4684 exited]
+[LWP 4683 exited]
+[LWP 4682 exited]
+[LWP 4681 exited]
+[LWP 4680 exited]
+[LWP 4674 exited]
+[LWP 4692 exited]
+[New process 4674]
+[Inferior 1 (process 4674) exited normally]

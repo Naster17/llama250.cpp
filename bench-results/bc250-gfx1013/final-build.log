@@ -1,0 +1,10 @@
+[  0%] Performing build step for 'vulkan-shaders-gen'
+[  4%] Built target ggml-base
+[100%] Built target vulkan-shaders-gen
+[  4%] Performing install step for 'vulkan-shaders-gen'
+-- Up-to-date: /home/nik/llama.cpp/build/Release/./vulkan-shaders-gen
+[  6%] Completed 'vulkan-shaders-gen'
+[  8%] Built target vulkan-shaders-gen
+[  8%] Building CXX object ggml/src/ggml-vulkan/CMakeFiles/ggml-vulkan.dir/ggml-vulkan.cpp.o
+[  8%] Linking CXX shared library ../../../bin/libggml-vulkan.so
+[100%] Built target ggml-vulkan

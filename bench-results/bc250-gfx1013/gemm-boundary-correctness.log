@@ -1,0 +1,26 @@
+ggml_vulkan: Found 1 Vulkan devices:
+ggml_vulkan: 0 = AMD BC-250 (RADV GFX1013) (radv) | uma: 1 | rebar: 1 | fp16: 1 | bf16: 0 | fp4: 0 | warp size: 32 | shared memory: 65536 | int dot: 0 | matrix cores: none
+Testing 3 devices
+
+Backend 1/3: Vulkan0
+  Device description: AMD BC-250 (RADV GFX1013)
+  Device memory: 15712 MB (15694 MB free)
+
+  MUL_MAT(name=boundary_f32_m4097_n513_k769_b1,type=f32,ne=[4097,513,1,1],op_params=[],sources=f32[769,4097,1,1],f32[769,513,1,1]): [1;32mOK[0m
+  MUL_MAT(name=boundary_f16_m4097_n513_k769_b1,type=f32,ne=[4097,513,1,1],op_params=[],sources=f16[769,4097,1,1],f32[769,513,1,1]): [1;32mOK[0m
+  MUL_MAT(name=boundary_bf16_m4097_n513_k769_b1,type=f32,ne=[4097,513,1,1],op_params=[],sources=bf16[769,4097,1,1],f32[769,513,1,1]): [1;32mOK[0m
+  MUL_MAT(name=boundary_q4_0_m4097_n513_k800_b1,type=f32,ne=[4097,513,1,1],op_params=[],sources=q4_0[800,4097,1,1],f32[800,513,1,1]): [1;32mOK[0m
+  MUL_MAT(name=boundary_q4_k_m4097_n513_k768_b1,type=f32,ne=[4097,513,1,1],op_params=[],sources=q4_K[768,4097,1,1],f32[768,513,1,1]): [1;32mOK[0m
+  MUL_MAT(name=boundary_q6_k_m4097_n513_k768_b1,type=f32,ne=[4097,513,1,1],op_params=[],sources=q6_K[768,4097,1,1],f32[768,513,1,1]): [1;32mOK[0m
+  MUL_MAT(name=boundary_q8_0_m4097_n513_k800_b1,type=f32,ne=[4097,513,1,1],op_params=[],sources=q8_0[800,4097,1,1],f32[800,513,1,1]): [1;32mOK[0m
+  MUL_MAT(name=boundary_iq4_nl_m4097_n513_k800_b1,type=f32,ne=[4097,513,1,1],op_params=[],sources=iq4_nl[800,4097,1,1],f32[800,513,1,1]): [1;32mOK[0m
+  MUL_MAT(name=boundary_f16_m8192_n512_k128_b2,type=f32,ne=[8192,512,2,1],op_params=[],sources=f16[128,8192,2,1],f32[128,512,2,1]): [1;32mOK[0m
+  MUL_MAT(name=boundary_q8_0_m8192_n512_k128_b2,type=f32,ne=[8192,512,2,1],op_params=[],sources=q8_0[128,8192,2,1],f32[128,512,2,1]): [1;32mOK[0m
+  10/10 tests passed
+  Backend Vulkan0: [1;32mOK[0m
+Backend 2/3: BLAS
+  Skipping
+Backend 3/3: CPU
+  Skipping
+3/3 backends passed
+[1;32mOK[0m

@@ -1,0 +1,23 @@
+ggml_vulkan: Found 1 Vulkan devices:
+ggml_vulkan: 0 = AMD BC-250 (RADV GFX1013) (radv) | uma: 1 | rebar: 1 | fp16: 1 | bf16: 0 | fp4: 0 | warp size: 32 | shared memory: 65536 | int dot: 0 | matrix cores: none
+Testing 3 devices
+
+Backend 1/3: Vulkan0
+  Device description: AMD BC-250 (RADV GFX1013)
+  Device memory: 15712 MB (15694 MB free)
+
+  MUL_MAT(name=threshold_q4_k_m1024_k8192,type=f32,ne=[1024,1,1,1],op_params=[],sources=q4_K[8192,1024,1,1],f32[8192,1,1,1]):                  57808 runs -    17.61 us/run -     4644 kB/run - [1;34m 251.43 GB/s[0m
+  MUL_MAT(name=threshold_q4_k_m4096_k8192,type=f32,ne=[4096,1,1,1],op_params=[],sources=q4_K[8192,4096,1,1],f32[8192,1,1,1]):                  18160 runs -    56.47 us/run -    18480 kB/run - [1;34m 312.07 GB/s[0m
+  MUL_MAT(name=threshold_q5_k_m1024_k8192,type=f32,ne=[1024,1,1,1],op_params=[],sources=q5_K[8192,1024,1,1],f32[8192,1,1,1]):                  53280 runs -    20.51 us/run -     5668 kB/run - [1;34m 263.52 GB/s[0m
+  MUL_MAT(name=threshold_q5_k_m4096_k8192,type=f32,ne=[4096,1,1,1],op_params=[],sources=q5_K[8192,4096,1,1],f32[8192,1,1,1]):                  14870 runs -    68.26 us/run -    22576 kB/run - [1;34m 315.41 GB/s[0m
+  MUL_MAT(name=threshold_q8_0_m1024_k8192,type=f32,ne=[1024,1,1,1],op_params=[],sources=q8_0[8192,1024,1,1],f32[8192,1,1,1]):                  38400 runs -    26.63 us/run -     8740 kB/run - [1;34m 312.98 GB/s[0m
+  MUL_MAT(name=threshold_q8_0_m4096_k8192,type=f32,ne=[4096,1,1,1],op_params=[],sources=q8_0[8192,4096,1,1],f32[8192,1,1,1]):                  10593 runs -    98.42 us/run -    34864 kB/run - [1;34m 337.81 GB/s[0m
+  MUL_MAT(name=threshold_iq4_nl_m1024_k8192,type=f32,ne=[1024,1,1,1],op_params=[],sources=iq4_nl[8192,1024,1,1],f32[8192,1,1,1]):              57808 runs -    19.14 us/run -     4644 kB/run - [1;34m 231.40 GB/s[0m
+  MUL_MAT(name=threshold_iq4_nl_m4096_k8192,type=f32,ne=[4096,1,1,1],op_params=[],sources=iq4_nl[8192,4096,1,1],f32[8192,1,1,1]):              18160 runs -    57.99 us/run -    18480 kB/run - [1;34m 303.94 GB/s[0m
+  Backend Vulkan0: [1;32mOK[0m
+Backend 2/3: BLAS
+  Skipping
+Backend 3/3: CPU
+  Skipping
+3/3 backends passed
+[1;32mOK[0m

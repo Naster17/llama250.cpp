@@ -1,0 +1,20 @@
+ggml_vulkan: Found 1 Vulkan devices:
+ggml_vulkan: 0 = AMD BC-250 (RADV GFX1013) (radv) | uma: 1 | rebar: 1 | fp16: 1 | bf16: 0 | fp4: 0 | warp size: 32 | shared memory: 65536 | int dot: 0 | matrix cores: none
+Testing 3 devices
+
+Backend 1/3: Vulkan0
+  Device description: AMD BC-250 (RADV GFX1013)
+  Device memory: 15712 MB (15694 MB free)
+
+  FLASH_ATTN_EXT(name=fa_h128_q32_kv8_type1,type=f32,ne=[128,32,1,1],op_params=[0:1035273459,3:10],sources=f32[128,1,32,1],f16[128,8192,8,1],f16[128,8192,8,1],f16[8192,1,1,1]): [1;32mOK[0m
+  FLASH_ATTN_EXT(name=fa_h256_q16_kv2_type1,type=f32,ne=[256,16,1,1],op_params=[0:1031798784,3:10],sources=f32[256,1,16,1],f16[256,8192,2,1],f16[256,8192,2,1],f16[8192,1,1,1]): [1;32mOK[0m
+  FLASH_ATTN_EXT(name=fa_h256_q4_kv1_type1,type=f32,ne=[256,4,1,1],op_params=[0:1031798784,3:10],sources=f32[256,1,4,1],f16[256,8192,1,1],f16[256,8192,1,1],f16[8192,1,1,1]): [1;32mOK[0m
+  FLASH_ATTN_EXT(name=fa_h128_q32_kv8_type8,type=f32,ne=[128,32,1,1],op_params=[0:1035273459,3:10],sources=f32[128,1,32,1],q8_0[128,8192,8,1],q8_0[128,8192,8,1],f16[8192,1,1,1]): [1;32mOK[0m
+  4/4 tests passed
+  Backend Vulkan0: [1;32mOK[0m
+Backend 2/3: BLAS
+  Skipping
+Backend 3/3: CPU
+  Skipping
+3/3 backends passed
+[1;32mOK[0m

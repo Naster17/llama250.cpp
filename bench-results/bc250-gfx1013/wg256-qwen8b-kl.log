@@ -1,0 +1,50 @@
+0.00.478.665 W load: control-looking token: 128247 '</s>' was not control-type; this is probably a bug in the model. its type will be overridden
+0.12.107.420 I cmn          init: llama threadpool init, n_threads = 6
+0.12.168.993 I 
+0.12.169.042 I system_info: n_threads = 6 (n_threads_batch = 6) / 12 | CPU : SSE3 = 1 | SSSE3 = 1 | AVX = 1 | AVX2 = 1 | F16C = 1 | FMA = 1 | BMI2 = 1 | LLAMAFILE = 1 | OPENMP = 1 | REPACK = 1 | 
+0.12.191.789 I kl_divergence: computing over 1 chunks, n_ctx=512, batch_size=512, n_seq=1
+0.13.305.449 I kl_divergence: 1.11 seconds per pass - ETA 0.02 minutes
+
+chunk             PPL               ln(PPL(Q)/PPL(base))          KL Divergence              Δp RMS            Same top p
+   1       2.8636 ±    0.4562      -0.00012 ±    0.00147       0.00023 ±    0.00005     0.348 ±  0.073 %    99.216 ±  0.554 %
+
+====== Perplexity statistics ======
+Mean PPL(Q)                   :   2.863592 ±   0.456249
+Mean PPL(base)                :   2.863935 ±   0.456434
+Cor(ln(PPL(Q)), ln(PPL(base))): 100.00%
+Mean ln(PPL(Q)/PPL(base))     :  -0.000119 ±   0.001469
+Mean PPL(Q)/PPL(base)         :   0.999881 ±   0.001469
+Mean PPL(Q)-PPL(base)         :  -0.000342 ±   0.004209
+
+====== KL divergence statistics ======
+Mean    KLD:   0.000226 ±   0.000047
+Maximum KLD:   0.004761
+99.9%   KLD:   0.004521
+99.0%   KLD:   0.003667
+95.0%   KLD:   0.001775
+90.0%   KLD:   0.000770
+Median  KLD:   0.000000
+10.0%   KLD:  -0.000007
+ 5.0%   KLD:  -0.000011
+ 1.0%   KLD:  -0.000032
+ 0.1%   KLD:  -0.000039
+Minimum KLD:  -0.000039
+
+====== Token probability statistics ======
+Mean    Δp: -0.018 ± 0.022 %
+Maximum Δp:  3.137%
+99.9%   Δp:  2.616%
+99.0%   Δp:  0.669%
+95.0%   Δp:  0.009%
+90.0%   Δp:  0.000%
+75.0%   Δp:  0.000%
+Median  Δp:  0.000%
+25.0%   Δp:  0.000%
+10.0%   Δp: -0.001%
+ 5.0%   Δp: -0.019%
+ 1.0%   Δp: -1.591%
+ 0.1%   Δp: -2.315%
+Minimum Δp: -2.404%
+RMS Δp    :  0.348 ± 0.073 %
+Same top p: 99.216 ± 0.554 %
+

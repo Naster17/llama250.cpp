@@ -1,0 +1,29 @@
+ggml_vulkan: Found 1 Vulkan devices:
+ggml_vulkan: 0 = AMD BC-250 (RADV GFX1013) (radv) | uma: 1 | rebar: 1 | fp16: 1 | bf16: 0 | fp4: 0 | warp size: 32 | shared memory: 65536 | int dot: 0 | matrix cores: none
+Testing 3 devices
+
+Backend 1/3: Vulkan0
+  Device description: AMD BC-250 (RADV GFX1013)
+  Device memory: 15712 MB (15694 MB free)
+
+  MUL_MAT(name=q8_m1024_n1_k4096_b1,type=f32,ne=[1024,1,1,1],op_params=[],sources=q8_0[4096,1024,1,1],f32[4096,1,1,1]):                76750 runs -    14.45 us/run -     4372 kB/run - [1;34m 288.61 GB/s[0m
+  MUL_MAT(name=q8_m4096_n1_k4096_b1,type=f32,ne=[4096,1,1,1],op_params=[],sources=q8_0[4096,4096,1,1],f32[4096,1,1,1]):                21164 runs -    49.25 us/run -    17440 kB/run - [1;34m 337.74 GB/s[0m
+  MUL_MAT(name=q8_m12288_n1_k4096_b1,type=f32,ne=[12288,1,1,1],op_params=[],sources=q8_0[4096,12288,1,1],f32[4096,1,1,1]):              7062 runs -   147.99 us/run -    52288 kB/run - [1;34m 336.95 GB/s[0m
+  MUL_MAT(name=q8_m4096_n1_k12288_b1,type=f32,ne=[4096,1,1,1],op_params=[],sources=q8_0[12288,4096,1,1],f32[12288,1,1,1]):              7062 runs -   149.02 us/run -    52288 kB/run - [1;34m 334.63 GB/s[0m
+  MUL_MAT(name=q8_m2048_n1_k7680_b1,type=f32,ne=[2048,1,1,1],op_params=[],sources=q8_0[7680,2048,1,1],f32[7680,1,1,1]):                20520 runs -    49.86 us/run -    16358 kB/run - [1;34m 312.91 GB/s[0m
+  MUL_MAT(name=q8_m7680_n1_k2048_b1,type=f32,ne=[7680,1,1,1],op_params=[],sources=q8_0[2048,7680,1,1],f32[2048,1,1,1]):                22572 runs -    46.27 us/run -    16358 kB/run - [1;34m 337.13 GB/s[0m
+  MUL_MAT(name=q8_m151936_n1_k4096_b1,type=f32,ne=[151936,1,1,1],op_params=[],sources=q8_0[4096,151936,1,1],f32[4096,1,1,1]):                    572 runs -  1811.76 us/run -   646337 kB/run - [1;34m 340.22 GB/s[0m
+  MUL_MAT(name=q8_m128000_n1_k2048_b1,type=f32,ne=[128000,1,1,1],op_params=[],sources=q8_0[2048,128000,1,1],f32[2048,1,1,1]):                   1364 runs -   740.50 us/run -   272508 kB/run - [1;34m 350.96 GB/s[0m
+  MUL_MAT(name=q8_m1024_n1_k8192_b1,type=f32,ne=[1024,1,1,1],op_params=[],sources=q8_0[8192,1024,1,1],f32[8192,1,1,1]):                38400 runs -    26.64 us/run -     8740 kB/run - [1;34m 312.85 GB/s[0m
+  MUL_MAT(name=q8_m4096_n1_k8192_b1,type=f32,ne=[4096,1,1,1],op_params=[],sources=q8_0[8192,4096,1,1],f32[8192,1,1,1]):                10593 runs -    98.49 us/run -    34864 kB/run - [1;34m 337.59 GB/s[0m
+  MUL_MAT(name=q8_m12288_n1_k8192_b1,type=f32,ne=[12288,1,1,1],op_params=[],sources=q8_0[8192,12288,1,1],f32[8192,1,1,1]):              3542 runs -   303.48 us/run -   104528 kB/run - [1;34m 328.48 GB/s[0m
+  MUL_MAT(name=q8_m1024_n1_k12288_b1,type=f32,ne=[1024,1,1,1],op_params=[],sources=q8_0[12288,1024,1,1],f32[12288,1,1,1]):             25600 runs -    39.09 us/run -    13108 kB/run - [1;34m 319.76 GB/s[0m
+  MUL_MAT(name=q8_m8192_n1_k4096_b1,type=f32,ne=[8192,1,1,1],op_params=[],sources=q8_0[4096,8192,1,1],f32[4096,1,1,1]):                10593 runs -    95.68 us/run -    34864 kB/run - [1;34m 347.50 GB/s[0m
+  MUL_MAT(name=q8_m2048_n1_k4096_b1,type=f32,ne=[2048,1,1,1],op_params=[],sources=q8_0[4096,2048,1,1],f32[4096,1,1,1]):                38450 runs -    26.23 us/run -     8728 kB/run - [1;34m 317.37 GB/s[0m
+  Backend Vulkan0: [1;32mOK[0m
+Backend 2/3: BLAS
+  Skipping
+Backend 3/3: CPU
+  Skipping
+3/3 backends passed
+[1;32mOK[0m

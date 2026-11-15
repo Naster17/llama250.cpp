@@ -1,0 +1,7 @@
+ggml_vulkan: Found 1 Vulkan devices:
+ggml_vulkan: 0 = AMD BC-250 (RADV GFX1013) (radv) | uma: 1 | rebar: 1 | fp16: 1 | bf16: 0 | fp4: 0 | warp size: 32 | shared memory: 65536 | int dot: 0 | matrix cores: none
+/home/nik/llama.cpp/src/llama-context.cpp:1789: GGML_ASSERT(cparams.n_ubatch >= n_tokens && "encoder requires n_ubatch >= n_tokens") failed
+warning: 29	src/thread/x86_64/syscall_cp.s: No such file or directory
+warning: 33	src/thread/pthread_cancel.c: No such file or directory
+warning: 6	src/process/waitpid.c: No such file or directory
+warning: 95	src/env/__libc_start_main.c: No such file or directory

@@ -1,0 +1,5 @@
+### gencheck-bf16
+net-before: rx=1148652189 tx=3196224354
+error: invalid argument: -no-cnv
+net-after: rx=1148652839 tx=3196225196
+

@@ -1,0 +1,56 @@
+ggml_vulkan: Found 1 Vulkan devices:
+ggml_vulkan: 0 = AMD BC-250 (RADV GFX1013) (radv) | uma: 1 | rebar: 1 | fp16: 1 | bf16: 0 | fp4: 0 | warp size: 32 | shared memory: 65536 | int dot: 0 | matrix cores: none
+| model                          |       size |     params | backend    | threads |  fa |            test |                  t/s |
+| ------------------------------ | ---------: | ---------: | ---------- | ------: | --: | --------------: | -------------------: |
+----------------
+Vulkan Timings:
+ADD: 128 x 3.935 us = 503.68 us
+CONCAT: 1664 x 3.323 us = 5530.84 us
+CPY: 1664 x 3.104 us = 5165.76 us
+FLASH_ATTN_EXT dst(128,16,1,1),  q(128,1,16,1),  k(128,256,4,1),  v(128,256,4,1),  m(256,1,1,1): 1408 x 18.757 us = 26411 us (111.802 GFLOPS/s)
+GET_ROWS: 1920 x 2.795 us = 5366.6 us
+GLU: 3072 x 2.965 us = 9109.12 us
+MUL: 4736 x 3.309 us = 15674.6 us
+MUL_MAT_VEC q8_0 m=128000 n=1 k=2048: 128 x 749.846 us = 95980.4 us (699.023 GFLOPS/s)
+MUL_MAT_VEC q8_0 m=16 n=1 k=2048: 1408 x 3.472 us = 4888.6 us (18.8709 GFLOPS/s)
+MUL_MAT_VEC q8_0 m=2048 n=1 k=2048: 4480 x 14.552 us = 65193.8 us (576.31 GFLOPS/s)
+MUL_MAT_VEC q8_0 m=2048 n=1 k=7680: 3072 x 54.756 us = 168213 us (574.452 GFLOPS/s)
+MUL_MAT_VEC q8_0 m=512 n=1 k=2048: 2816 x 5.772 us = 16256.7 us (363.181 GFLOPS/s)
+MUL_MAT_VEC q8_0 m=6144 n=1 k=2048: 1664 x 38.82 us = 64598 us (648.096 GFLOPS/s)
+MUL_MAT_VEC q8_0 m=7680 n=1 k=2048: 6144 x 47.261 us = 290375 us (665.437 GFLOPS/s)
+RMS_NORM_MUL RMS_NORM(2048,1,1,1): 6400 x 7.055 us = 45156.4 us
+RMS_NORM_MUL_ADD RMS_NORM(2048,1,1,1): 6016 x 7.288 us = 43848.6 us
+RMS_NORM_MUL_ROPE RMS_NORM(128,16,1,1): 1408 x 6.013 us = 8466.8 us
+RMS_NORM_MUL_ROPE_VIEW_SET_ROWS RMS_NORM(128,4,1,1): 1408 x 6.586 us = 9273.16 us
+SCALE: 26 x 4.775 us = 124.16 us
+SET_ROWS: 1408 x 2.995 us = 4218.04 us
+SIGMOID: 1408 x 2.483 us = 3496.52 us
+SSM_CONV: 1664 x 3.842 us = 6393.92 us
+Total time: 894245 us.
+| lfm3 1.7B Q8_0                 |   1.71 GiB |     1.73 B | Vulkan,BLAS |       6 |   1 |           tg128 |        117.75 ± 0.00 |
+----------------
+Vulkan Timings:
+ADD: 1 x 3.12 us = 3.12 us
+CONCAT: 13 x 2.64 us = 34.32 us
+CPY: 13 x 2.498 us = 32.48 us
+FLASH_ATTN_EXT dst(128,16,1,1),  q(128,1,16,1),  k(128,256,4,1),  v(128,256,4,1),  m(256,1,1,1): 11 x 13.81 us = 151.92 us (151.847 GFLOPS/s)
+GET_ROWS: 15 x 2.296 us = 34.44 us
+GLU: 24 x 2.441 us = 58.6 us
+MUL: 37 x 2.664 us = 98.6 us
+MUL_MAT_VEC q8_0 m=128000 n=1 k=2048: 1 x 743.6 us = 743.6 us (704.895 GFLOPS/s)
+MUL_MAT_VEC q8_0 m=16 n=1 k=2048: 11 x 2.807 us = 30.88 us (23.3394 GFLOPS/s)
+MUL_MAT_VEC q8_0 m=2048 n=1 k=2048: 35 x 13.766 us = 481.84 us (609.185 GFLOPS/s)
+MUL_MAT_VEC q8_0 m=2048 n=1 k=7680: 24 x 50.796 us = 1219.12 us (619.238 GFLOPS/s)
+MUL_MAT_VEC q8_0 m=512 n=1 k=2048: 22 x 5.085 us = 111.88 us (412.282 GFLOPS/s)
+MUL_MAT_VEC q8_0 m=6144 n=1 k=2048: 13 x 37.904 us = 492.76 us (663.763 GFLOPS/s)
+MUL_MAT_VEC q8_0 m=7680 n=1 k=2048: 48 x 46.057 us = 2210.76 us (682.833 GFLOPS/s)
+RMS_NORM_MUL RMS_NORM(2048,1,1,1): 50 x 5.788 us = 289.44 us
+RMS_NORM_MUL_ADD RMS_NORM(2048,1,1,1): 47 x 5.966 us = 280.44 us
+RMS_NORM_MUL_ROPE RMS_NORM(128,16,1,1): 11 x 4.894 us = 53.84 us
+RMS_NORM_MUL_ROPE_VIEW_SET_ROWS RMS_NORM(128,4,1,1): 11 x 5.414 us = 59.56 us
+SET_ROWS: 11 x 2.44 us = 26.84 us
+SIGMOID: 11 x 2.025 us = 22.28 us
+SSM_CONV: 13 x 3.138 us = 40.8 us
+Total time: 6477.52 us.
+
+build: 7d7f0287 (3283)

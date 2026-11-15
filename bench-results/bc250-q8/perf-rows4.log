@@ -1,0 +1,23 @@
+ggml_vulkan: Found 1 Vulkan devices:
+ggml_vulkan: 0 = AMD BC-250 (RADV GFX1013) (radv) | uma: 1 | rebar: 1 | fp16: 1 | bf16: 0 | fp4: 0 | warp size: 32 | shared memory: 65536 | int dot: 0 | matrix cores: none
+Testing 3 devices
+
+Backend 1/3: Vulkan0
+  Device description: AMD BC-250 (RADV GFX1013)
+  Device memory: 15712 MB (15694 MB free)
+
+  MUL_MAT(name=q8_m1024_n1_k4096_b1,type=f32,ne=[1024,1,1,1],op_params=[],sources=q8_0[4096,1024,1,1],f32[4096,1,1,1]):                69075 runs -    16.07 us/run -     4372 kB/run - [1;34m 259.40 GB/s[0m
+  MUL_MAT(name=q8_m4096_n1_k4096_b1,type=f32,ne=[4096,1,1,1],op_params=[],sources=q8_0[4096,4096,1,1],f32[4096,1,1,1]):                21164 runs -    49.30 us/run -    17440 kB/run - [1;34m 337.39 GB/s[0m
+  MUL_MAT(name=q8_m12288_n1_k4096_b1,type=f32,ne=[12288,1,1,1],op_params=[],sources=q8_0[4096,12288,1,1],f32[4096,1,1,1]):              7062 runs -   154.81 us/run -    52288 kB/run - [1;34m 322.12 GB/s[0m
+  MUL_MAT(name=q8_m4096_n1_k12288_b1,type=f32,ne=[4096,1,1,1],op_params=[],sources=q8_0[12288,4096,1,1],f32[12288,1,1,1]):              7062 runs -   142.68 us/run -    52288 kB/run - [1;34m 349.50 GB/s[0m
+  MUL_MAT(name=q8_m2048_n1_k7680_b1,type=f32,ne=[2048,1,1,1],op_params=[],sources=q8_0[7680,2048,1,1],f32[7680,1,1,1]):                22572 runs -    44.78 us/run -    16358 kB/run - [1;34m 348.38 GB/s[0m
+  MUL_MAT(name=q8_m7680_n1_k2048_b1,type=f32,ne=[7680,1,1,1],op_params=[],sources=q8_0[2048,7680,1,1],f32[2048,1,1,1]):                20520 runs -    50.65 us/run -    16358 kB/run - [1;34m 308.00 GB/s[0m
+  MUL_MAT(name=q8_m151936_n1_k4096_b1,type=f32,ne=[151936,1,1,1],op_params=[],sources=q8_0[4096,151936,1,1],f32[4096,1,1,1]):                    572 runs -  1835.94 us/run -   646337 kB/run - [1;34m 335.74 GB/s[0m
+  MUL_MAT(name=q8_m128000_n1_k2048_b1,type=f32,ne=[128000,1,1,1],op_params=[],sources=q8_0[2048,128000,1,1],f32[2048,1,1,1]):                   1364 runs -   780.68 us/run -   272508 kB/run - [1;34m 332.89 GB/s[0m
+  Backend Vulkan0: [1;32mOK[0m
+Backend 2/3: BLAS
+  Skipping
+Backend 3/3: CPU
+  Skipping
+3/3 backends passed
+[1;32mOK[0m

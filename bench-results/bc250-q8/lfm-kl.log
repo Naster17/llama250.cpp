@@ -1,0 +1,49 @@
+0.05.079.750 I cmn          init: llama threadpool init, n_threads = 6
+0.05.116.429 I 
+0.05.116.464 I system_info: n_threads = 6 (n_threads_batch = 6) / 12 | CPU : SSE3 = 1 | SSSE3 = 1 | AVX = 1 | AVX2 = 1 | F16C = 1 | FMA = 1 | BMI2 = 1 | LLAMAFILE = 1 | OPENMP = 1 | REPACK = 1 | 
+0.05.146.264 I kl_divergence: computing over 1 chunks, n_ctx=512, batch_size=1, n_seq=1
+0.09.803.275 I kl_divergence: 4.66 seconds per pass - ETA 0.07 minutes
+
+chunk             PPL               ln(PPL(Q)/PPL(base))          KL Divergence              Δp RMS            Same top p
+   1       5.8649 ±    1.1945       0.01431 ±    0.01432      -0.00000 ±    0.00000     0.000 ±  0.000 %    100.000 ±  0.000 %
+
+====== Perplexity statistics ======
+Mean PPL(Q)                   :   5.864913 ±   1.194479
+Mean PPL(base)                :   5.781562 ±   1.151286
+Cor(ln(PPL(Q)), ln(PPL(base))):  99.77%
+Mean ln(PPL(Q)/PPL(base))     :   0.014314 ±   0.014317
+Mean PPL(Q)/PPL(base)         :   1.014417 ±   0.014523
+Mean PPL(Q)-PPL(base)         :   0.083351 ±   0.090102
+
+====== KL divergence statistics ======
+Mean    KLD:  -0.000000 ±   0.000001
+Maximum KLD:   0.000037
+99.9%   KLD:   0.000034
+99.0%   KLD:   0.000021
+95.0%   KLD:   0.000012
+90.0%   KLD:   0.000007
+Median  KLD:   0.000000
+10.0%   KLD:  -0.000007
+ 5.0%   KLD:  -0.000016
+ 1.0%   KLD:  -0.000033
+ 0.1%   KLD:  -0.000039
+Minimum KLD:  -0.000040
+
+====== Token probability statistics ======
+Mean    Δp:  0.000 ± 0.000 %
+Maximum Δp:  0.004%
+99.9%   Δp:  0.004%
+99.0%   Δp:  0.003%
+95.0%   Δp:  0.000%
+90.0%   Δp:  0.000%
+75.0%   Δp:  0.000%
+Median  Δp:  0.000%
+25.0%   Δp:  0.000%
+10.0%   Δp: -0.000%
+ 5.0%   Δp: -0.000%
+ 1.0%   Δp: -0.000%
+ 0.1%   Δp: -0.002%
+Minimum Δp: -0.002%
+RMS Δp    :  0.000 ± 0.000 %
+Same top p: 100.000 ± 0.000 %
+

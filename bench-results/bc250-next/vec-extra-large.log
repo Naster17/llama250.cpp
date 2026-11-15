@@ -1,0 +1,39 @@
+ggml_vulkan: Found 1 Vulkan devices:
+ggml_vulkan: 0 = AMD BC-250 (RADV GFX1013) (radv) | uma: 1 | rebar: 1 | fp16: 1 | bf16: 0 | fp4: 0 | warp size: 32 | shared memory: 65536 | int dot: 0 | matrix cores: none
+Testing 3 devices
+
+Backend 1/3: Vulkan0
+  Device description: AMD BC-250 (RADV GFX1013)
+  Device memory: 15712 MB (15694 MB free)
+
+  MUL_MAT(name=vec_extra_f32_m512_n1_k1024,type=f32,ne=[512,1,1,1],op_params=[],sources=f32[1024,512,1,1],f32[1024,1,1,1]):                   139264 runs -     7.59 us/run -     2054 kB/run - [1;34m 257.99 GB/s[0m
+  MUL_MAT(name=vec_extra_f32_m4096_n1_k4096,type=f32,ne=[4096,1,1,1],op_params=[],sources=f32[4096,4096,1,1],f32[4096,1,1,1]):                  6144 runs -   164.07 us/run -    65568 kB/run - [1;34m 381.12 GB/s[0m
+  MUL_MAT(name=vec_extra_f32_m4096_n1_k12288,type=f32,ne=[4096,1,1,1],op_params=[],sources=f32[12288,4096,1,1],f32[12288,1,1,1]):               2223 runs -   481.58 us/run -   196672 kB/run - [1;34m 389.47 GB/s[0m
+  MUL_MAT(name=vec_extra_bf16_m512_n1_k1024,type=f32,ne=[512,1,1,1],op_params=[],sources=bf16[1024,512,1,1],f32[1024,1,1,1]):                 180224 runs -     5.58 us/run -     1030 kB/run - [1;34m 176.03 GB/s[0m
+  MUL_MAT(name=vec_extra_bf16_m4096_n1_k4096,type=f32,ne=[4096,1,1,1],op_params=[],sources=bf16[4096,4096,1,1],f32[4096,1,1,1]):               11264 runs -    89.58 us/run -    32800 kB/run - [1;34m 349.19 GB/s[0m
+  MUL_MAT(name=vec_extra_bf16_m4096_n1_k12288,type=f32,ne=[4096,1,1,1],op_params=[],sources=bf16[12288,4096,1,1],f32[12288,1,1,1]):                     4104 runs -   258.09 us/run -    98368 kB/run - [1;34m 363.48 GB/s[0m
+  MUL_MAT(name=vec_extra_f16_m512_n1_k1024,type=f32,ne=[512,1,1,1],op_params=[],sources=f16[1024,512,1,1],f32[1024,1,1,1]):                   188416 runs -     5.41 us/run -     1030 kB/run - [1;34m 181.66 GB/s[0m
+  MUL_MAT(name=vec_extra_f16_m4096_n1_k4096,type=f32,ne=[4096,1,1,1],op_params=[],sources=f16[4096,4096,1,1],f32[4096,1,1,1]):                 11264 runs -    89.54 us/run -    32800 kB/run - [1;34m 349.37 GB/s[0m
+  MUL_MAT(name=vec_extra_f16_m4096_n1_k12288,type=f32,ne=[4096,1,1,1],op_params=[],sources=f16[12288,4096,1,1],f32[12288,1,1,1]):               4104 runs -   258.54 us/run -    98368 kB/run - [1;34m 362.85 GB/s[0m
+  MUL_MAT(name=vec_extra_q4_0_m512_n1_k1024,type=f32,ne=[512,1,1,1],op_params=[],sources=q4_0[1024,512,1,1],f32[1024,1,1,1]):                 212992 runs -     4.76 us/run -      294 kB/run - [1;34m  58.90 GB/s[0m
+  MUL_MAT(name=vec_extra_q4_0_m4096_n1_k4096,type=f32,ne=[4096,1,1,1],op_params=[],sources=q4_0[4096,4096,1,1],f32[4096,1,1,1]):               36290 runs -    30.23 us/run -     9248 kB/run - [1;34m 291.73 GB/s[0m
+  MUL_MAT(name=vec_extra_q4_0_m4096_n1_k12288,type=f32,ne=[4096,1,1,1],op_params=[],sources=q4_0[12288,4096,1,1],f32[12288,1,1,1]):                    13321 runs -    81.90 us/run -    27712 kB/run - [1;34m 322.71 GB/s[0m
+  MUL_MAT(name=vec_extra_q4_1_m512_n1_k1024,type=f32,ne=[512,1,1,1],op_params=[],sources=q4_1[1024,512,1,1],f32[1024,1,1,1]):                 212992 runs -     4.74 us/run -      326 kB/run - [1;34m  65.55 GB/s[0m
+  MUL_MAT(name=vec_extra_q4_1_m4096_n1_k4096,type=f32,ne=[4096,1,1,1],op_params=[],sources=q4_1[4096,4096,1,1],f32[4096,1,1,1]):               32670 runs -    33.98 us/run -    10272 kB/run - [1;34m 288.28 GB/s[0m
+  MUL_MAT(name=vec_extra_q4_1_m4096_n1_k12288,type=f32,ne=[4096,1,1,1],op_params=[],sources=q4_1[12288,4096,1,1],f32[12288,1,1,1]):                    11990 runs -    90.82 us/run -    30784 kB/run - [1;34m 323.26 GB/s[0m
+  MUL_MAT(name=vec_extra_q5_0_m512_n1_k1024,type=f32,ne=[512,1,1,1],op_params=[],sources=q5_0[1024,512,1,1],f32[1024,1,1,1]):                 180224 runs -     5.77 us/run -      358 kB/run - [1;34m  59.22 GB/s[0m
+  MUL_MAT(name=vec_extra_q5_0_m4096_n1_k4096,type=f32,ne=[4096,1,1,1],op_params=[],sources=q5_0[4096,4096,1,1],f32[4096,1,1,1]):               23768 runs -    44.69 us/run -    11296 kB/run - [1;34m 241.04 GB/s[0m
+  MUL_MAT(name=vec_extra_q5_0_m4096_n1_k12288,type=f32,ne=[4096,1,1,1],op_params=[],sources=q5_0[12288,4096,1,1],f32[12288,1,1,1]):                     8928 runs -   114.67 us/run -    33856 kB/run - [1;34m 281.58 GB/s[0m
+  MUL_MAT(name=vec_extra_q5_1_m512_n1_k1024,type=f32,ne=[512,1,1,1],op_params=[],sources=q5_1[1024,512,1,1],f32[1024,1,1,1]):                 172032 runs -     5.86 us/run -      390 kB/run - [1;34m  63.44 GB/s[0m
+  MUL_MAT(name=vec_extra_q5_1_m4096_n1_k4096,type=f32,ne=[4096,1,1,1],op_params=[],sources=q5_1[4096,4096,1,1],f32[4096,1,1,1]):               24516 runs -    42.89 us/run -    12320 kB/run - [1;34m 273.92 GB/s[0m
+  MUL_MAT(name=vec_extra_q5_1_m4096_n1_k12288,type=f32,ne=[4096,1,1,1],op_params=[],sources=q5_1[12288,4096,1,1],f32[12288,1,1,1]):                     9090 runs -   112.42 us/run -    36928 kB/run - [1;34m 313.26 GB/s[0m
+  MUL_MAT(name=vec_extra_q8_0_m512_n1_k1024,type=f32,ne=[512,1,1,1],op_params=[],sources=q8_0[1024,512,1,1],f32[1024,1,1,1]):                 212992 runs -     4.70 us/run -      550 kB/run - [1;34m 111.52 GB/s[0m
+  MUL_MAT(name=vec_extra_q8_0_m4096_n1_k4096,type=f32,ne=[4096,1,1,1],op_params=[],sources=q8_0[4096,4096,1,1],f32[4096,1,1,1]):               21164 runs -    48.62 us/run -    17440 kB/run - [1;34m 342.08 GB/s[0m
+  MUL_MAT(name=vec_extra_q8_0_m4096_n1_k12288,type=f32,ne=[4096,1,1,1],op_params=[],sources=q8_0[12288,4096,1,1],f32[12288,1,1,1]):                     7062 runs -   148.85 us/run -    52288 kB/run - [1;34m 335.02 GB/s[0m
+  Backend Vulkan0: [1;32mOK[0m
+Backend 2/3: BLAS
+  Skipping
+Backend 3/3: CPU
+  Skipping
+3/3 backends passed
+[1;32mOK[0m

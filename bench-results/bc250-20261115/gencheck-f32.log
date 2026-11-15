@@ -1,0 +1,5 @@
+### gencheck-f32
+net-before: rx=1148651473 tx=3196223512
+error: invalid argument: -no-cnv
+net-after: rx=1148652189 tx=3196224354
+
