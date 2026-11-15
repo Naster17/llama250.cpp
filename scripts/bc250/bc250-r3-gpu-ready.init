@@ -1,0 +1,14 @@
+#!/sbin/openrc-run
+name="BC-250 r3 GPU readiness"
+description="Load amdgpu, apply SMU-OC, restart governor, ACK r3 boot guard on .104"
+
+depend() {
+    need sshd bc250-fan-curve
+    after bc250-r3-bootguard cyan-skillfish-governor-smu bc250-smu-oc
+}
+
+start() {
+    ebegin "Loading r3 GPU (amdgpu + SMU-OC + governor + guard ACK)"
+    /usr/bin/python3 /usr/local/bin/bc250-r3-gpu-ready.py
+    eend $?
+}
