@@ -597,6 +597,14 @@ bool socket_t::impl::recv_data(void * data, size_t size) {
         }
         bytes_recv += (size_t)n;
     }
+#ifdef TCP_QUICKACK
+    // re-arm quickack after each receive; the kernel clears it during the exchange
+    static const bool quickack = getenv("GGML_RPC_QUICKACK") != nullptr;
+    if (quickack) {
+        int one = 1;
+        setsockopt(fd, IPPROTO_TCP, TCP_QUICKACK, &one, sizeof(one));
+    }
+#endif
     return true;
 }
 
