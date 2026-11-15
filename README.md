@@ -85,15 +85,17 @@ GGML_RPC_WIRE_BF16=1 build/bin/llama-bench -m model.gguf -ngl 99 -fa 1 \
 
 In order of measured impact:
 
-1. **Mesa version.** RADV/ACO 26.1 emits 12-31% fewer instructions for the same
-   shaders than 25.2: +10% prefill, +3% decode, free. Keep Mesa current.
+1. **Kernel + Mesa together.** The bc250rocm r3 kernel plus RADV/ACO 26.1 is the fast
+   combo. Mesa 26.1 emits 12-31% fewer shader instructions than 25.2, but the win only
+   materializes on the r3 kernel; on r2 it is flat-to-slower. Two boards with identical
+   Mesa 26.1.6 and identical shader code still differ ~19% purely by kernel (r2 vs r3).
 2. **40 CU unlock** (community kernel patch or umr dual-register write). Without it
    you have 24 CUs and ~60% of the performance.
 3. **Governor.** [cyan-skillfish-governor-smu](https://github.com/nikarh/cyan-skillfish-governor-smu)
    with the SMU method; see docs/bc250.md for the cold-start config.
 4. Kernel cmdline: `amdgpu.gttsize=15200 ttm.pages_limit=3891200`, THP `always`.
 
-## Benchmarks (LFM3-1.7B-Q8_0, 40 CU @ 2 GHz, Mesa 26.1)
+## Benchmarks (LFM3-1.7B-Q8_0, 40 CU @ 2 GHz, kernel r2 + Mesa 25.2 unless noted)
 
 | Config | pp512 tok/s | tg128 tok/s |
 |---|---|---|
