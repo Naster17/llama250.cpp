@@ -1,134 +1,132 @@
-# llama.cpp
+# llama250.cpp
 
-![llama.cpp](https://raw.githubusercontent.com/ggml-org/llama-brand/refs/heads/master/logo/svg/cover/llama-cpp/cover-llama-cpp-dark.svg)
+A [llama.cpp](https://github.com/ggml-org/llama.cpp) fork tuned for the **AMD BC-250** -
+the cheap mining board built around the Cyan Skillfish / Oberon APU (`gfx1013`, the
+PS5-class chip). 40 compute units, 16 GB of shared GDDR6, Zen 2 CPU, Vulkan via RADV.
 
-<div align="center">
+Upstream llama.cpp runs on this board, but its Vulkan backend makes conservative
+choices for hardware like this. This fork collects the patches, settings and
+measurements that close that gap. Everything here was benchmarked on real BC-250
+boards, not guessed.
 
-<b>LLM inference in C/C++</b>
+## Why the BC-250 needs its own tuning
 
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](https://opensource.org/licenses/MIT)
-[![Release](https://img.shields.io/github/v/release/ggml-org/llama.cpp?filter=v*&color=brightgreen)](https://github.com/ggml-org/llama.cpp/releases?q=tag:v1)
-[![Nightly](https://img.shields.io/github/v/release/ggml-org/llama.cpp?label=nightly&filter=b*&color=orange)](https://github.com/ggml-org/llama.cpp/releases?q=b)
-[![Server](https://img.shields.io/github/actions/workflow/status/ggml-org/llama.cpp/server.yml?label=Server)](https://github.com/ggml-org/llama.cpp/actions/workflows/server.yml)
-[![Docker](https://img.shields.io/github/actions/workflow/status/ggml-org/llama.cpp/docker.yml?label=Docker)](https://github.com/ggml-org/llama.cpp/actions/workflows/docker.yml)
-[![Winget](https://img.shields.io/github/actions/workflow/status/ggml-org/llama.cpp/winget.yml?label=Winget)](https://github.com/ggml-org/llama.cpp/actions/workflows/winget.yml)
+`gfx1013` is RDNA1-class with a few RDNA2 touches, and it breaks several assumptions
+the Vulkan backend makes:
 
-[ggml](https://github.com/ggml-org/ggml) / [ops](https://github.com/ggml-org/llama.cpp/blob/master/docs/ops.md) / [maintainer PRs](https://github.com/ggml-org/llama.cpp/pulls?q=is%3Apr%20is%3Aopen%20draft%3AFalse%20(author%3Asanmai%20OR%20author%3Argerganov%20OR%20author%3AKitaitiMakoto%20OR%20author%3Adanbev%20OR%20author%3Aaldehir%20OR%20author%3Amax-krasnyansky%20OR%20author%3ACISC%20OR%20author%3Aggerganov%20OR%20author%3Aam17an%20OR%20author%3Ajhen0409%20OR%20author%3Abartowski1182%20OR%20author%3Anikwen%20OR%20author%3Ahipudding%20OR%20author%3Aravi9%20OR%20author%3AServeurpersoCom%20OR%20author%3Athelittlefireman%20OR%20author%3Apwilkin%20OR%20author%3Areeselevine%20OR%20author%3Angxson%20OR%20author%3Ajeffbolznv%20OR%20author%3Amarty1885%20OR%20author%3A0cc4m%20OR%20author%3ATitaniumtown%20OR%20author%3Aangt%20OR%20author%3AIMbackK%20OR%20author%3Aarthw%20OR%20author%3AJohannesGaessler%20OR%20author%3AORippler%20OR%20author%3Aruixiang63%20OR%20author%3Axctan%20OR%20author%3AmasterFoad%20OR%20author%3Aallozaur%20OR%20author%3AAndreas-Krebbel%20OR%20author%3Ayomaytk%20OR%20author%3Aaendk%20OR%20author%3Awine99%20OR%20author%3Agaugarg-nv%20OR%20author%3Ataronaeo%20OR%20author%3Aforforever73%20OR%20author%3Achaxu01%20OR%20author%3Alhez%20OR%20author%3AAlekseiNikiforovIBM%20OR%20author%3Anetrunnereve%20OR%20author%3Afairydreaming%20OR%20author%3Aynankani)%20sort%3Aupdated-desc) / [dev stats](https://github.com/ggml-org/llama.cpp-dev) / [lib llama API](https://github.com/ggml-org/llama.cpp/issues/9289) / [llama-server REST API](https://github.com/ggml-org/llama.cpp/issues/9291)
+| Fact | Consequence |
+|---|---|
+| No `VK_KHR_cooperative_matrix` (no WMMA) | All GEMM runs on the scalar shader path; tile choice dominates prefill speed |
+| No accelerated integer dot product (`shaderIntegerDotProduct` all false) | No dp4a shortcut for quantized math; dequant goes through FP16 |
+| Full-rate packed FP16 (`v_pk_fma_f16`) | FP16 shader math is the compute lever: ~20.5 TFLOPS FP16 vs ~7.7 TFLOPS FP32 at 40 CU / 2 GHz |
+| 40 CUs, but factory boards ship with 24 active | Needs the community dual-register unlock (kernel/umr, outside this repo) |
+| UMA: one DEVICE_LOCAL heap, ReBAR enabled | Weight loading path matters; mmap is a win, not a loss |
+| Wave32, 64 KB LDS per WGP | Tile and workgroup sizes tuned for this, not for RDNA3 |
 
-</div>
+## What is patched
 
-## Quick start
+All patches live on top of upstream master (base commit `278a89cb7`) and are kept as
+small, reviewable diffs:
 
-A few options to get `llama.cpp` installed on your machine:
+1. **Vulkan scalar-path tuning for gfx1013** (`ggml-vulkan.cpp`, `ggml-vulkan-types.h`)
+   - device detection by PCI ID `0x13FE` + RADV + no coopmat + wave32
+   - large GEMM tiles (256x128x128, workgroup 256) enabled on the scalar path
+   - occupancy-aware tile selector: fall back to medium tiles when the large tile
+     would leave CUs idle
+   - decode matvec: extra rows-per-workgroup variants (rows2/rows4) for Q8_0 and
+     larger workgroups for long-K shapes
+   - FlashAttention decode: shared-memory staging for deep KV (>= 4096)
+2. **mmap auto on UMA with ReBAR** (`ggml-vulkan.cpp`)
+   - upstream disables mmap for all iGPUs; on this UMA board mmap is ~12% faster for
+     prefill, so AUTO now resolves to mmap when ReBAR is present
+3. **RPC cluster: BF16 wire for layer-split activations** (`ggml-rpc.cpp`, opt-in
+   `GGML_RPC_WIRE_BF16=1`)
+   - F32 activation tensors crossing a device boundary are sent as BF16 (2x less
+     traffic), +16% prefill on a 2-board 1 GbE cluster; greedy output verified identical
+   - `GGML_RPC_QUICKACK=1` experiment kept gated (measured: no effect, NODELAY already set)
 
-```bash
-# curl
-curl -LsSf https://llama.app/install.sh | sh
+Measured effect of the tuning on the new base: +2-5% prefill, +2% decode; the mmap
+change adds +12% prefill on top. Full numbers in [docs/bc250.md](docs/bc250.md).
 
-# powershell
-irm https://llama.app/install.ps1 | iex
-```
+## Quickstart
 
-- Visit https://llama.app and follow the instructions
-- Run with Docker - see our [Docker documentation](docs/docker.md)
-- Download pre-built binaries from the [releases page](https://github.com/ggml-org/llama.cpp/releases)
-- Build from source by cloning this repository - check out [our build guide](docs/build.md)
-
-Once installed:
+Build (on the board, Alpine + Vulkan SDK):
 
 ```sh
-# Download and run a model directly from Hugging Face
-llama cli -hf ggml-org/Qwen3.5-0.8B-GGUF
-
-# Launch OpenAI-compatible API server
-llama serve -hf ggml-org/Qwen3.5-0.8B-GGUF
+cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+      -DGGML_VULKAN=ON -DGGML_NATIVE=ON -DGGML_RPC=ON
+ninja -C build
 ```
 
-<table align="center">
-    <tr>
-        <td align="center" width=50%>
-            <img width="1310" height="888" alt="VLM session with `llama cli`" src="https://github.com/user-attachments/assets/88726b48-1713-48aa-a525-95a02e78afc4" />
-            <i>VLM session with <b>llama cli</b></i>
-        </td>
-        <td align="center">
-            <img width="1392" height="958" alt="Built-in web UI against `llama serve` running Qwen 3.6" src="https://github.com/user-attachments/assets/b402f972-2e32-4def-8771-8d849f08cf2e" />
-            <i>Built-in web UI against <b>llama serve</b></i>
-        </td>
-    </tr>
-<table>
+Run (single board):
 
-## Description
+```sh
+build/bin/llama-cli -m model.gguf -ngl 99 -fa 1 -ub 512 -t 6
+```
 
-The main goal of `llama.cpp` is to enable LLM (and VLM) inference with minimal setup and state-of-the-art performance on
-a wide range of hardware - locally and in the cloud.
+- `-fa 1` is worth +37-41% prefill on this chip.
+- `-ub 512` is the measured sweet spot; 2048 costs up to -32%.
+- mmap is automatic after the patch (or force with `-lm mmap`).
+- Keep KV cache f16; q8_0 KV measured slightly slower here.
 
-- Plain C/C++ implementation without any dependencies
-- Apple silicon is a first-class citizen - optimized via ARM NEON, Accelerate and Metal frameworks
-- AVX, AVX2, AVX512 and AMX support for x86 architectures
-- RVV, ZVFH, ZFH, ZICBOP and ZIHINTPAUSE support for RISC-V architectures
-- 1.5-bit, 2-bit, 3-bit, 4-bit, 5-bit, 6-bit, and 8-bit integer quantization for faster inference and reduced memory use
-- Custom CUDA kernels for running LLMs on NVIDIA GPUs (support for AMD GPUs via HIP and Moore Threads GPUs via MUSA)
-- Vulkan and SYCL backend support
-- CPU+GPU hybrid inference to partially accelerate models larger than the total VRAM capacity
+Two-board cluster over 1 GbE:
 
-The `llama.cpp` project is build on top of the [ggml](https://github.com/ggml-org/ggml) library.
+```sh
+# board 2
+build/bin/ggml-rpc-server -H 0.0.0.0 -p 50052 -c
+# board 1
+GGML_RPC_WIRE_BF16=1 build/bin/llama-bench -m model.gguf -ngl 99 -fa 1 \
+    --rpc 192.168.1.105:50052 -sm layer -ub 256
+```
 
-## Supported backends
+`-sm row` is not supported by the RPC backend (split buffers unimplemented).
 
-| Backend | Target devices |
-| --- | --- |
-| [BLAS](docs/build.md#blas-build) | All |
-| [BLIS](docs/backend/BLIS.md) | All |
-| [CANN](docs/build.md#cann) | Huawei Ascend NPU |
-| [CUDA](docs/build.md#cuda) | Nvidia GPU |
-| [HIP](docs/build.md#hip) | AMD GPU |
-| [Hexagon](docs/backend/snapdragon/README.md) | Snapdragon |
-| [IBM zDNN](docs/backend/zDNN.md) | IBM Z & LinuxONE |
-| [MUSA](docs/build.md#musa) | Moore Threads GPU |
-| [Metal](docs/build.md#metal-build) | Apple Silicon |
-| [OpenCL](docs/backend/OPENCL.md) | Adreno GPU |
-| [OpenVINO [In Progress]](docs/backend/OPENVINO.md) | Intel CPUs, GPUs, and NPUs |
-| [RPC](https://github.com/ggml-org/llama.cpp/tree/master/tools/rpc) | All |
-| [SYCL](docs/backend/SYCL.md) | Intel GPU |
-| [VirtGPU](docs/backend/VirtGPU.md) | VirtGPU APIR |
-| [Vulkan](docs/build.md#vulkan) | GPU |
-| [WebGPU](docs/build.md#webgpu) | All |
-| [ZenDNN](docs/build.md#zendnn) | AMD CPU |
+## System setup matters as much as the code
 
-## Documentation
+In order of measured impact:
 
-#### Tools
+1. **Mesa version.** RADV/ACO 26.1 emits 12-31% fewer instructions for the same
+   shaders than 25.2: +10% prefill, +3% decode, free. Keep Mesa current.
+2. **40 CU unlock** (community kernel patch or umr dual-register write). Without it
+   you have 24 CUs and ~60% of the performance.
+3. **Governor.** [cyan-skillfish-governor-smu](https://github.com/nikarh/cyan-skillfish-governor-smu)
+   with the SMU method; see docs/bc250.md for the cold-start config.
+4. Kernel cmdline: `amdgpu.gttsize=15200 ttm.pages_limit=3891200`, THP `always`.
 
-- [cli](tools/cli/README.md)
-- [completion](tools/completion/README.md)
-- [server](tools/server/README.md)
-- [GBNF grammars](grammars/README.md)
+## Benchmarks (LFM3-1.7B-Q8_0, 40 CU @ 2 GHz, Mesa 26.1)
 
-#### Development
+| Config | pp512 tok/s | tg128 tok/s |
+|---|---|---|
+| Upstream defaults (fa auto, no mmap) | ~2517 | ~154 |
+| This fork, recommended flags | ~2826 | ~155 |
+| This fork, Q4_0 weights | ~2906 | ~213 |
+| 2-board RPC cluster, BF16 wire | ~2558 (pp2048) | ~124 |
 
-- [How to build](docs/build.md)
-- [Running on Docker](docs/docker.md)
-- [Build on Android](docs/android.md)
-- [Multi-GPU usage](docs/multi-gpu.md)
-- [Performance troubleshooting](docs/development/token_generation_performance_tips.md)
-- [GGML tips & tricks](https://github.com/ggml-org/llama.cpp/wiki/GGML-Tips-&-Tricks)
-- [XCFramework](docs/xcframework.md)
-- [Completions](docs/completions.md)
-- [Models](docs/models.md)
-- [Release process](docs/release.md)
+Q4_0 is the best quant for this chip: prefill on par with Q8_0, decode +36%.
+Details, per-op profiles and the full hypothesis log: [docs/bc250.md](docs/bc250.md).
 
-## Contributing
+## Repository layout
 
-- Contributors can open PRs
-- Collaborators will be invited based on contributions
-- Maintainers can push to branches in the `llama.cpp` repo and merge PRs into the `master` branch
-- Any help with managing issues, PRs and projects is very appreciated!
-- Read the [CONTRIBUTING.md](CONTRIBUTING.md) for more information
+- Upstream llama.cpp tree, unmodified except the files listed above
+- `docs/bc250.md` - hardware facts, all measurements, verdicts, reproduction scripts
+- `docs/upstream-README.md` - the original llama.cpp README
+- `bench-results/bc250-20261115/` - raw logs, CSVs and scripts from the benchmark rounds
 
-## Acknowledgements
+Sync with upstream:
 
-- [yhirose/cpp-httplib](https://github.com/yhirose/cpp-httplib) - Single-header HTTP server, used by `llama-server` - MIT license
-- [nothings/stb](https://github.com/nothings/stb) - Single-header image format decoder, used by multimodal subsystem - Public domain
-- [nlohmann/json](https://github.com/nlohmann/json) - Single-header JSON library, used by various tools/examples - MIT License
-- [mackron/miniaudio](https://github.com/mackron/miniaudio) - Single-header audio format decoder, used by multimodal subsystem - Public domain
-- [sheredom/subprocess.h](https://github.com/sheredom/subprocess.h) - Single-header process launching solution for C and C++ - Public domain
+```sh
+git remote add upstream https://github.com/ggml-org/llama.cpp
+git fetch upstream && git merge upstream/master
+```
+
+## Status and caveats
+
+- Private fork for BC-250 owners. Not intended for upstream submission; the
+  device-specific heuristics are deliberately gated by PCI ID.
+- Known issues: `llama-cli` + RPC offload segfaults at model load (upstream bug,
+  `llama-bench`/`llama-server` work); RPC row-split unsupported.
+- AI-assisted development; all changes benchmarked and reviewed on hardware.
+
+## License
+
+MIT, as upstream llama.cpp.
