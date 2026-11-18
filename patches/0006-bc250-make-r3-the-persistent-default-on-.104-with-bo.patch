@@ -1,0 +1,137 @@
+From cbba0afd52b540173f012352c1a58b6335752e07 Mon Sep 17 00:00:00 2001
+From: Naster17 <naster17.dev@gmail.com>
+Date: Sun, 15 Nov 2026 19:01:15 +0100
+Subject: [PATCH] bc250 : make r3 the persistent default on .104 with boot
+ GPU-readiness service
+
+Adds bc250-r3-gpu-ready (loads amdgpu, applies SMU-OC, restarts governor, ACKs
+the r3 boot guard) and sets GRUB_DEFAULT to the r3 entry. r2 kept as menu fallback.
+
+Assisted-by: omp
+---
+ scripts/bc250/bc250-r3-gpu-ready.init | 14 +++++
+ scripts/bc250/bc250-r3-gpu-ready.py   | 89 +++++++++++++++++++++++++++
+ 2 files changed, 103 insertions(+)
+ create mode 100755 scripts/bc250/bc250-r3-gpu-ready.init
+ create mode 100755 scripts/bc250/bc250-r3-gpu-ready.py
+
+diff --git a/scripts/bc250/bc250-r3-gpu-ready.init b/scripts/bc250/bc250-r3-gpu-ready.init
+new file mode 100755
+index 000000000..2ea34cbaf
+--- /dev/null
++++ b/scripts/bc250/bc250-r3-gpu-ready.init
+@@ -0,0 +1,14 @@
++#!/sbin/openrc-run
++name="BC-250 r3 GPU readiness"
++description="Load amdgpu, apply SMU-OC, restart governor, ACK r3 boot guard on .104"
++
++depend() {
++    need sshd bc250-fan-curve
++    after bc250-r3-bootguard cyan-skillfish-governor-smu bc250-smu-oc
++}
++
++start() {
++    ebegin "Loading r3 GPU (amdgpu + SMU-OC + governor + guard ACK)"
++    /usr/bin/python3 /usr/local/bin/bc250-r3-gpu-ready.py
++    eend $?
++}
+\ No newline at end of file
+diff --git a/scripts/bc250/bc250-r3-gpu-ready.py b/scripts/bc250/bc250-r3-gpu-ready.py
+new file mode 100755
+index 000000000..a7cf28841
+--- /dev/null
++++ b/scripts/bc250/bc250-r3-gpu-ready.py
+@@ -0,0 +1,89 @@
++#!/usr/bin/env python3
++"""BC-250 .104 r3 GPU readiness: load amdgpu, apply SMU-OC, restart governor, ACK boot guard.
++
++Runs at boot on the r3 kernel (amdgpu is blacklisted there). Only acknowledges the
++boot guard after amdgpu loads cleanly, so a failed load still lets the guard revert.
++"""
++import json
++import subprocess
++import sys
++import time
++from pathlib import Path
++
++KREL = "7.2.10-bc250rocm-r3"
++GUARD = Path("/run/bc250-r3-guard")
++LOG = Path("/var/log/bc250-r3-gpu-ready.log")
++
++
++def log(msg):
++    line = f"[{time.strftime('%Y-%m-%dT%H:%M:%S')}] {msg}"
++    print(line, flush=True)
++    with LOG.open("a") as f:
++        f.write(line + "\n")
++
++
++def run(cmd, timeout=60):
++    return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
++
++
++def main():
++    import os
++    if os.uname().release != KREL:
++        log(f"SKIP: kernel {os.uname().release} != {KREL}")
++        return 0
++    if os.geteuid() != 0:
++        log("ERROR: must run as root")
++        return 1
++
++    # Wait for the boot guard to arm.
++    state = None
++    for _ in range(120):
++        try:
++            state = json.loads((GUARD / "state.json").read_text())
++            if state.get("status") == "armed":
++                break
++        except (OSError, ValueError):
++            pass
++        time.sleep(0.5)
++    if not state or state.get("status") != "armed":
++        log("ERROR: boot guard not armed; not touching amdgpu")
++        return 1
++    if state["deadline_monotonic"] - time.monotonic() < 30:
++        log("ERROR: too little guard deadline left")
++        return 1
++
++    # Load the custom amdgpu module.
++    if not Path("/sys/module/amdgpu").exists():
++        r = run(["modprobe", "amdgpu"], timeout=90)
++        if r.returncode != 0:
++            log(f"ERROR: modprobe amdgpu failed: {r.stderr.strip()[:300]}")
++            return 1
++    if not Path("/sys/module/amdgpu").exists():
++        log("ERROR: amdgpu not present after modprobe")
++        return 1
++    log("amdgpu loaded")
++
++    # Apply SMU-OC (undervolt + boost ceiling) and restart the governor now that amdgpu is up.
++    r = run(["/home/nik/bc250_smu_oc/.venv/bin/bc250-apply", "-a", "/etc/bc250-smu-oc.conf"], timeout=60)
++    log(f"smu-oc: {r.stdout.strip().splitlines()[-1] if r.stdout.strip() else r.stderr.strip()[:120]}")
++    r = run(["rc-service", "cyan-skillfish-governor-smu", "restart"], timeout=60)
++    log(f"governor restart rc={r.returncode}")
++
++    # Only ACK once amdgpu is confirmed loaded.
++    if state["deadline_monotonic"] - time.monotonic() < 10:
++        log("ERROR: guard deadline too close; not ACKing")
++        return 1
++    (GUARD / "ack.json").write_text(
++        json.dumps({k: state[k] for k in ("boot_id", "nonce", "phase")})
++    )
++    for _ in range(25):
++        if json.loads((GUARD / "state.json").read_text())["status"] == "acknowledged":
++            break
++        time.sleep(0.2)
++    acked = json.loads((GUARD / "state.json").read_text())["status"] == "acknowledged"
++    log(f"boot guard acknowledged={acked}")
++    return 0 if acked else 1
++
++
++if __name__ == "__main__":
++    sys.exit(main())
+\ No newline at end of file
+-- 
+2.56.1
+

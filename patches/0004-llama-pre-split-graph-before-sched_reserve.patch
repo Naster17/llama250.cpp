@@ -1,3 +1,15 @@
+From 49cf8db501e0bd1ef9801d19d9bf8cca7487c392 Mon Sep 17 00:00:00 2001
+From: Naster17 <Naster17@users.noreply.github.com>
+Date: Wed, 18 Nov 2026 22:45:59 +0100
+Subject: [PATCH] llama : pre-split graph before sched_reserve
+
+ggml_backend_sched_reserve's internal single split over-allocates the
+compute buffer on RPC backends (1790 MiB -> OOM at ctx 200k). Pre-split
+yields the correct 534 MiB allocation.
+---
+ src/llama-context.cpp | 5 +++++
+ 1 file changed, 5 insertions(+)
+
 diff --git a/src/llama-context.cpp b/src/llama-context.cpp
 index 3e931f1cf..eebfc29fd 100644
 --- a/src/llama-context.cpp
@@ -14,3 +26,6 @@ index 3e931f1cf..eebfc29fd 100644
      // initialize scheduler with the specified graph
      if (split_only) {
          if (sizes) {
+-- 
+2.56.1
+

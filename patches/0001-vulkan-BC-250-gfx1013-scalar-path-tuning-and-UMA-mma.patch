@@ -1,0 +1,203 @@
+From 1915a3517c51388e747cd7ad1255927ae6e4722b Mon Sep 17 00:00:00 2001
+From: Naster17 <naster17.dev@gmail.com>
+Date: Sun, 15 Nov 2026 13:00:54 +0100
+Subject: [PATCH] vulkan : BC-250 gfx1013 scalar-path tuning and UMA mmap
+
+- large GEMM tiles (256x128x128, wg256) + occupancy-aware tile selector on gfx1013
+- DMMV rows2/rows4 variants and large workgroups for decode matvec
+- FA decode shared-memory staging for deep KV
+- resolve mmap AUTO to mmap on UMA with ReBAR (+12% prefill on BC-250)
+
+Assisted-by: omp
+---
+ ggml/src/ggml-vulkan/ggml-vulkan-types.h |  3 +
+ ggml/src/ggml-vulkan/ggml-vulkan.cpp     | 82 ++++++++++++++++++++++--
+ 2 files changed, 78 insertions(+), 7 deletions(-)
+
+diff --git a/ggml/src/ggml-vulkan/ggml-vulkan-types.h b/ggml/src/ggml-vulkan/ggml-vulkan-types.h
+index 64a39bf25..3227299e8 100644
+--- a/ggml/src/ggml-vulkan/ggml-vulkan-types.h
++++ b/ggml/src/ggml-vulkan/ggml-vulkan-types.h
+@@ -406,6 +406,9 @@ inline vk_conv_block_size vk_conv_block_sizes[CONV_SHAPE_COUNT] = {
+ enum dmmv_wg_sizes {
+     DMMV_WG_SIZE_SUBGROUP,
+     DMMV_WG_SIZE_LARGE,
++    DMMV_WG_SIZE_SUBGROUP_ROWS2,
++    DMMV_WG_SIZE_LARGE_ROWS2,
++    DMMV_WG_SIZE_SUBGROUP_ROWS4,
+     DMMV_WG_SIZE_COUNT,
+ };
+ 
+diff --git a/ggml/src/ggml-vulkan/ggml-vulkan.cpp b/ggml/src/ggml-vulkan/ggml-vulkan.cpp
+index 1af36cdca..1d41c7af1 100644
+--- a/ggml/src/ggml-vulkan/ggml-vulkan.cpp
++++ b/ggml/src/ggml-vulkan/ggml-vulkan.cpp
+@@ -1206,6 +1206,39 @@ void ggml_vk_wait_events(vk_context& ctx, std::vector<vk::Event>&& events) {
+     );
+ }
+ 
++static bool ggml_vk_is_bc250_scalar(const vk_device& device) {
++    return device->vendor_id == VK_VENDOR_ID_AMD && device->properties.deviceID == 0x13FE &&
++           device->driver_id == vk::DriverId::eMesaRadv && !device->coopmat_support &&
++           device->subgroup_size_control && device->subgroup_min_size == 32;
++}
++
++static bool ggml_vk_bc250_use_large_matvec(const vk_device& device, ggml_type type, uint32_t k) {
++    if (!ggml_vk_is_bc250_scalar(device)) {
++        return false;
++    }
++    const uint32_t wg_size = device->subgroup_size * 4;
++    // Keep the final workgroup iteration full.
++    switch (type) {
++        case GGML_TYPE_F32:
++        case GGML_TYPE_F16:
++        case GGML_TYPE_BF16:
++            return k % (wg_size * 4) == 0;
++        case GGML_TYPE_Q4_0:
++        case GGML_TYPE_Q4_1:
++        case GGML_TYPE_Q5_1:
++        case GGML_TYPE_Q8_0:
++            return k >= 4096 && k % (wg_size * 8) == 0;
++        case GGML_TYPE_Q5_0:
++        case GGML_TYPE_IQ4_NL:
++            return k >= 8192 && k % (wg_size * 8) == 0;
++        case GGML_TYPE_Q4_K:
++        case GGML_TYPE_Q5_K:
++            return k >= 8192 && k % (wg_size * 16) == 0;
++        default:
++            return false;
++    }
++}
++
+ static vk_fa_tuning_params get_fa_tuning_params_scalar(const vk_device& device, uint32_t hsk, uint32_t hsv, uint32_t n_rows, uint32_t n_kv, ggml_type k_type, ggml_type v_type, bool f32acc) {
+ 
+     vk_fa_tuning_params result{};
+@@ -1256,7 +1289,10 @@ static vk_fa_tuning_params get_fa_tuning_params_scalar(const vk_device& device,
+ 
+     result.d_split = std::min(std::min(result.subgroup_size, 8u), D_lsb / 4);
+ 
+-    result.shmem_staging = (device->vendor_id == VK_VENDOR_ID_NVIDIA && hsk < 256 && hsv < 256) ? 1 : 0;
++    const bool bc250_staging = ggml_vk_is_bc250_scalar(device) && n_rows <= 8 && n_kv >= 4096 &&
++                               hsk == hsv && (hsk == 128 || hsk == 256) &&
++                               k_type == GGML_TYPE_F16 && v_type == GGML_TYPE_F16;
++    result.shmem_staging = ((device->vendor_id == VK_VENDOR_ID_NVIDIA && hsk < 256 && hsv < 256) || bc250_staging) ? 1 : 0;
+ 
+     if (!reduce_block_rows && !ggml_vk_flash_attn_scalar_shmem_support(device, result, hsk, hsv, f32acc, k_type, v_type)) {
+         result.block_rows /= 2;
+@@ -1927,6 +1963,8 @@ static bool ggml_vk_amd_large_tile_supported(const vk_device& device) {
+ void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested) {
+     VK_LOG_DEBUG("ggml_vk_load_shaders(" << device->name << ")");
+ 
++    const bool bc250_scalar = ggml_vk_is_bc250_scalar(device);
++
+     // some shaders have a minimum subgroup size
+     const uint32_t subgroup_size_8 = std::max(device->subgroup_size, 8u);
+     const uint32_t subgroup_size_16 = std::max(device->subgroup_size, 16u);
+@@ -2093,7 +2131,11 @@ void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested) {
+         s_warptile_mmqid_int_k = { mul_mat_subgroup_size_32, 32,  32, 32, mul_mat_s_warptile_wm_16, 32, 1, 2, 1, 1, mul_mat_subgroup_size_16 };
+ 
+         // chip specific tuning
+-        if ((device->architecture == AMD_GCN) && (device->driver_id != vk::DriverId::eAmdProprietary)) {
++        if (bc250_scalar) {
++            // Share the output tile across more threads to reduce register use.
++            l_warptile = { 256, 128, 128, 16, 32, 64, 2, tm_l, tn_l, tk_l, 32 };
++            l_warptile_mmq = { 256, 128, 128, 32, 32, 64, 2, tm_l, tn_l, tk_l, 32 };
++        } else if ((device->architecture == AMD_GCN) && (device->driver_id != vk::DriverId::eAmdProprietary)) {
+             m_warptile_mmq = m_warptile_mmq_int = { 256, 64, 64, 32, 16, 16, 2, 2, 2, 1, 16 };
+             m_warptile_mmqid = m_warptile_mmqid_int = { 256, 64, 64, 32, 16, 16, 2, 2, 2, 1, 16 };
+         } else if (device->vendor_id == VK_VENDOR_ID_AMD && device->coopmat_support && ggml_vk_amd_large_tile_supported(device)) {
+@@ -3180,7 +3222,7 @@ void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested) {
+             return 0;
+         };
+     } else {
+-        device->matmul_tile_selector = [](uint32_t m, uint32_t n, uint32_t /*k*/, uint32_t /*shader_core_count*/,
++        device->matmul_tile_selector = [bc250_scalar](uint32_t m, uint32_t n, uint32_t /*k*/, uint32_t shader_core_count,
+                                           const std::vector<vk_matmul_pipeline_pair>& configs) -> uint32_t {
+             if (configs.size() <= 1) return 0;
+             for (uint32_t i = 0; i < configs.size(); ++i) {
+@@ -3191,6 +3233,11 @@ void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested) {
+             if (last == 0 || m <= 32 || n <= 32) return 0;
+             if (last == 1) return 1;
+             if (m <= 64 || n <= 64) return 1;
++            if (bc250_scalar) {
++                const auto & tile = configs[last].unaligned->wg_denoms;
++                const uint64_t n_tiles = ((uint64_t(m) + tile[0] - 1) / tile[0]) * ((uint64_t(n) + tile[1] - 1) / tile[1]);
++                if (shader_core_count == 0 || n_tiles < uint64_t(shader_core_count) * 2) return 1;
++            }
+             return last;
+         };
+         device->matmul_id_tile_selector = device->matmul_tile_selector;
+@@ -3252,6 +3299,17 @@ void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested) {
+ #endif
+ 
+     for (uint32_t w = 0; w < DMMV_WG_SIZE_COUNT; ++w) {
++        if (w >= DMMV_WG_SIZE_SUBGROUP_ROWS2) {
++            if (bc250_scalar) {
++                const bool large = w == DMMV_WG_SIZE_LARGE_ROWS2;
++                const uint32_t rows = w == DMMV_WG_SIZE_SUBGROUP_ROWS4 ? 4 : 2;
++                const uint32_t wg_size = subgroup_size * (large ? 4 : 1);
++                const shader_reduction_mode reduc = !use_subgroups ? SHADER_REDUCTION_MODE_SHMEM :
++                    (large ? SHADER_REDUCTION_MODE_HYBRID : SHADER_REDUCTION_MODE_SUBGROUP);
++                ggml_vk_create_pipeline(device, device->pipeline_dequant_mul_mat_vec_f32_f32[w][GGML_TYPE_Q8_0][0], "mul_mat_vec_q8_0_f32_f32_tiled", arr_dmmv_q8_0_f32_f32_len[reduc], arr_dmmv_q8_0_f32_f32_data[reduc], "main", mul_mat_vec_num_bindings, sizeof(vk_mat_vec_push_constants), {rows, 1, 1}, {wg_size, rows, 1}, 1, true, use_subgroups, force_subgroup_size);
++            }
++            continue;
++        }
+         const uint32_t wg_size_subgroup   = (w == DMMV_WG_SIZE_SUBGROUP) ? subgroup_size : (subgroup_size * 4);
+         const uint32_t wg_size_subgroup16 = (w == DMMV_WG_SIZE_SUBGROUP) ? subgroup_size16 : (subgroup_size16 * 4);
+ 
+@@ -5196,7 +5254,7 @@ vk_device ggml_vk_get_device(size_t idx) {
+             switch (device->vendor_id) {
+ #ifndef GGML_VULKAN_RUN_TESTS
+             case VK_VENDOR_ID_AMD:
+-                device->mul_mat_l[i]    = device->coopmat_support && ggml_vk_amd_large_tile_supported(device);
++                device->mul_mat_l[i]    = (device->coopmat_support && ggml_vk_amd_large_tile_supported(device)) || ggml_vk_is_bc250_scalar(device);
+                 device->mul_mat_m[i]    = true;
+                 device->mul_mat_s[i]    = true;
+                 device->mul_mat_id_l[i] = false;
+@@ -6029,7 +6087,8 @@ static vk_pipeline ggml_vk_get_dequantize_mul_mat_vec(ggml_backend_vk_context *
+ 
+     // heuristic to choose workgroup size
+     uint32_t dmmv_wg = DMMV_WG_SIZE_SUBGROUP;
+-    if ((ctx->device->vendor_id == VK_VENDOR_ID_NVIDIA && ctx->device->architecture != vk_device_architecture::NVIDIA_PRE_TURING) || ctx->device->vendor_id == VK_VENDOR_ID_INTEL) {
++    if ((ctx->device->vendor_id == VK_VENDOR_ID_NVIDIA && ctx->device->architecture != vk_device_architecture::NVIDIA_PRE_TURING) ||
++        ctx->device->vendor_id == VK_VENDOR_ID_INTEL || ggml_vk_bc250_use_large_matvec(ctx->device, a_type, k)) {
+         // Prefer larger workgroups when M is small, to spread the work out more
+         // and keep more SMs busy.
+         // q6_k seems to prefer small workgroup size even for "medium" values of M.
+@@ -6044,6 +6103,14 @@ static vk_pipeline ggml_vk_get_dequantize_mul_mat_vec(ggml_backend_vk_context *
+         }
+     }
+ 
++    if (a_type == GGML_TYPE_Q8_0 && b_type == GGML_TYPE_F32 && num_cols == 1 && ggml_vk_is_bc250_scalar(ctx->device)) {
++        if (m == 2048 && k == 7680) {
++            dmmv_wg = DMMV_WG_SIZE_SUBGROUP_ROWS4;
++        } else if (m >= 1024 && k >= 4096 && k <= 12288 && k % 4096 == 0) {
++            dmmv_wg = m <= 8192 ? DMMV_WG_SIZE_LARGE_ROWS2 : DMMV_WG_SIZE_SUBGROUP_ROWS2;
++        }
++    }
++
+     if (b_type == GGML_TYPE_Q8_1) {
+         if (ctx->device->vendor_id == VK_VENDOR_ID_INTEL) {
+             dmmv_wg = DMMV_WG_SIZE_SUBGROUP;
+@@ -6117,7 +6184,8 @@ static vk_pipeline ggml_vk_get_dequantize_mul_mat_vec_id(ggml_backend_vk_context
+ 
+     // heuristic to choose workgroup size
+     uint32_t dmmv_wg = DMMV_WG_SIZE_SUBGROUP;
+-    if ((ctx->device->vendor_id == VK_VENDOR_ID_NVIDIA && ctx->device->architecture != vk_device_architecture::NVIDIA_PRE_TURING) || ctx->device->vendor_id == VK_VENDOR_ID_INTEL) {
++    if ((ctx->device->vendor_id == VK_VENDOR_ID_NVIDIA && ctx->device->architecture != vk_device_architecture::NVIDIA_PRE_TURING) ||
++        ctx->device->vendor_id == VK_VENDOR_ID_INTEL || ggml_vk_bc250_use_large_matvec(ctx->device, a_type, k)) {
+         // Prefer larger workgroups when M is small, to spread the work out more
+         // and keep more SMs busy.
+         // q6_k seems to prefer small workgroup size even for "medium" values of M.
+@@ -16111,7 +16179,7 @@ static void ggml_backend_vk_device_get_props(ggml_backend_dev_t dev, struct ggml
+         /* .host_buffer           = */ true,
+         /* .buffer_from_host_ptr  = */ false,
+         /* .events                = */ true,
+-        /* .mmap_support          = */ !ctx->is_integrated_gpu,
++        /* .mmap_support          = */ !ctx->is_integrated_gpu || ggml_vk_get_device(ctx->device)->rebar,
+     };
+ }
+ 
+-- 
+2.56.1
+

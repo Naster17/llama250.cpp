@@ -1,3 +1,15 @@
+From 50602262caed7df56efb602b80eb7369f9679b32 Mon Sep 17 00:00:00 2001
+From: Naster17 <Naster17@users.noreply.github.com>
+Date: Wed, 18 Nov 2026 22:45:59 +0100
+Subject: [PATCH] unicode : non-backtracking flint pre-tokenizer handlers
+
+Fixes musl libc stack-overflow SIGSEGV on long whitespace/CJK runs
+(std::regex recursion). Mirrors upstream 3e528431e + 6f55fb55e.
+---
+ src/unicode.cpp        | 314 +++++++++++++++++++++++++++++++++++++++++
+ tests/test-unicode.cpp |  42 ++++++
+ 2 files changed, 356 insertions(+)
+
 diff --git a/src/unicode.cpp b/src/unicode.cpp
 index 796f8e8fb..04b9c515c 100644
 --- a/src/unicode.cpp
@@ -389,3 +401,6 @@ index 5ced7a28a..5377f61fd 100644
 +
      return success ? 0 : 1;
  }
+-- 
+2.56.1
+

@@ -1,3 +1,14 @@
+From 45090ffb516a0a8b11e7935fb2757b4c562375af Mon Sep 17 00:00:00 2001
+From: Naster17 <Naster17@users.noreply.github.com>
+Date: Wed, 18 Nov 2026 22:45:59 +0100
+Subject: [PATCH] vulkan : env-gated FA quant-KV LDS staging for BC-250
+
+Extend bc250 scalar FA staging gate from F16-only to quantized K/V
+(GGML_VK_FA_QUANT_STAGING=1). Correct, ~neutral perf at tested depths.
+---
+ ggml/src/ggml-vulkan/ggml-vulkan.cpp | 11 +++++++++--
+ 1 file changed, 9 insertions(+), 2 deletions(-)
+
 diff --git a/ggml/src/ggml-vulkan/ggml-vulkan.cpp b/ggml/src/ggml-vulkan/ggml-vulkan.cpp
 index 1d41c7af1..bc161409b 100644
 --- a/ggml/src/ggml-vulkan/ggml-vulkan.cpp
@@ -26,3 +37,6 @@ index 1d41c7af1..bc161409b 100644
  
      // With head sizes above 128, 16 rows per workgroup spill registers on Qualcomm and run about
      // 40x slower; at large KV a single dispatch can then exceed the Windows GPU timeout.
+-- 
+2.56.1
+
