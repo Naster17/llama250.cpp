@@ -1,0 +1,16 @@
+diff --git a/src/llama-context.cpp b/src/llama-context.cpp
+index 3e931f1cf..eebfc29fd 100644
+--- a/src/llama-context.cpp
++++ b/src/llama-context.cpp
+@@ -3055,6 +3055,11 @@ ggml_cgraph * llama_context::graph_reserve(
+     this->n_input_tensors = llama_graph_n_input_tensors(gf);
+     this->n_outputs = save_n_outputs;
+ 
++    // Pre-split before reserve: reserve's internal single split over-allocates the
++    // compute buffer on RPC backends (OOM at large ctx); pre-splitting avoids it.
++    if (!split_only && gf) {
++        ggml_backend_sched_split_graph(sched.get(), gf);
++    }
+     // initialize scheduler with the specified graph
+     if (split_only) {
+         if (sizes) {
