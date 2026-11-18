@@ -25,8 +25,8 @@ the Vulkan backend makes:
 
 ## What is patched
 
-All patches live on top of upstream master (base commit `278a89cb7`) and are kept as
-small, reviewable diffs:
+All patches live on top of upstream master (fork base `278a89cb7`, since merged
+forward to `edec462cc`) and are kept as small, reviewable diffs in `patches/`:
 
 1. **Vulkan scalar-path tuning for gfx1013** (`ggml-vulkan.cpp`, `ggml-vulkan-types.h`)
    - device detection by PCI ID `0x13FE` + RADV + no coopmat + wave32
@@ -44,6 +44,21 @@ small, reviewable diffs:
    - F32 activation tensors crossing a device boundary are sent as BF16 (2x less
      traffic), +16% prefill on a 2-board 1 GbE cluster; greedy output verified identical
    - `GGML_RPC_QUICKACK=1` experiment kept gated (measured: no effect, NODELAY already set)
+4. **flint pre-tokenizer, non-backtracking** (`src/unicode.cpp`, `patches/0001`)
+   - fixes the musl libc stack-overflow SIGSEGV on long whitespace/CJK runs
+     (std::regex recursion); mirrors upstream `3e528431e`+`6f55fb55e`
+5. **RPC reserve pre-split** (`src/llama-context.cpp`, `patches/0002`)
+   - pre-split the graph before `ggml_backend_sched_reserve`; fixes RPC compute
+     over-allocation (1790 -> ~534 MiB) that OOM-killed the remote at ctx 200k
+6. **FA quant-KV LDS staging** (`ggml-vulkan.cpp`, `patches/0003`, opt-in
+   `GGML_VK_FA_QUANT_STAGING=1`) - extends scalar FA staging to quantized K/V;
+   correct, ~neutral at tested depths
+
+**Retracted:** an earlier Mesa patch enabling `has_accelerated_dot_product` on
+gfx1013 was **harmful** - the dot opcodes (`v_dot2/4/8`) write zero / legacy-min
+on this silicon, giving `MUL_MAT_ID` ERR~1.0. Stock Mesa (int dot OFF) is correct.
+See `Naster17/bc250-mesa` `docs/GFX1013-DOT-HAZARD.md`. The working accelerators
+are packed FP16 / mixed-precision FMA / INT24 / DPP, used by the FP16 path.
 
 Measured effect of the tuning on the new base: +2-5% prefill, +2% decode; the mmap
 change adds +12% prefill on top. Full numbers in [docs/bc250.md](docs/bc250.md).
@@ -109,8 +124,14 @@ Details, per-op profiles and the full hypothesis log: [docs/bc250.md](docs/bc250
 
 ## Repository layout
 
-- Upstream llama.cpp tree, unmodified except the files listed above
-- `docs/bc250.md` - hardware facts, all measurements, verdicts, reproduction scripts
+- Upstream llama.cpp tree (merged to `edec462cc`) + the BC-250 patches above
+- `patches/` - exportable `git format-patch` diffs (0001 flint, 0002 RPC pre-split,
+  0003 FA quant-KV staging) + `patches/README.md`
+- `scripts/llama250.sh` - universal model-agnostic server launcher (env-driven)
+- `scripts/rpc-server.sh` - 2-node RPC peer launcher
+- `docs/SCENARIOS.md` - usage for dense/MoE/long-ctx/embeddings/speculative/vision
+- `docs/BC250-USAGE.md` - build + driver + RPC guide (stock Mesa, int dot off)
+- `docs/bc250.md` - hardware facts, measurements, verdicts, reproduction scripts
 - `docs/upstream-README.md` - the original llama.cpp README
 - `bench-results/bc250-20261115/` - raw logs, CSVs and scripts from the benchmark rounds
 
