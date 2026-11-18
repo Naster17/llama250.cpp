@@ -15,28 +15,23 @@ cmake --build build -j$(nproc) --target llama-server llama-bench ggml-rpc-server
 
 Binaries: `build/bin/llama-server`, `build/bin/ggml-rpc-server`, `build/bin/llama-bench`.
 
-## 2. Patched RADV driver (the big win)
+## 2. Use the STOCK Mesa driver (do NOT enable integer dot)
 
-Upstream Mesa disables integer dot product on gfx1013. The `Naster17/bc250-mesa`
-patch enables it: ~4.3x MoE expert matvec, +30% prompt processing. Build it once:
+**Do not use the old `bc250-mesa` int-dot patch.** It was retracted: the gfx1013
+dot opcodes (`v_dot2/4/8`) write zero (or `v_dot4c` runs an SI-era legacy float
+min), so enabling `has_accelerated_dot_product` makes llama.cpp produce garbage
+(`MUL_MAT_ID` ERR ~ 1.0 for every quant). Stock Mesa correctly keeps integer dot
+**off** on gfx1013 (`int dot: 0`). See `Naster17/bc250-mesa`
+`docs/GFX1013-DOT-HAZARD.md`.
 
-```sh
-git clone https://github.com/Naster17/bc250-mesa && cd bc250-mesa && ./build.sh
-```
-
-Then point the Vulkan loader at the patched driver (no root, no system change):
-
-```sh
-export VK_ICD_FILENAMES=$PWD/mesa/build/src/amd/vulkan/radeon_devenv_icd.x86_64.json
-```
-
-Set this on **every** node (server and each rpc-server). Confirm with
-`vulkaninfo --summary` and the llama.cpp startup line `int dot: 1` (was `0`).
+Just use the system RADV driver (no `VK_ICD_FILENAMES` override). The startup
+line should read `int dot: 0`. The working accelerators on this chip are packed
+FP16 / mixed-precision FMA / INT24 / DPP, which llama.cpp's FP16 path already
+uses — no driver patch needed.
 
 ## 3. Single node
 
 ```sh
-VK_ICD_FILENAMES=/path/radeon_devenv_icd.x86_64.json \
 ./build/bin/llama-server -m model.gguf --host 0.0.0.0 --port 8080 \
   -ngl 99 -t 10 -tb 10 -fa on -ctk q8_0 -ctv q8_0 -c 32768 -b 4096 -ub 1024
 ```
@@ -46,14 +41,12 @@ VK_ICD_FILENAMES=/path/radeon_devenv_icd.x86_64.json \
 On the remote node (.105):
 
 ```sh
-VK_ICD_FILENAMES=/path/radeon_icd.json \
 ./build/bin/ggml-rpc-server -H 0.0.0.0 -p 50052 -t 6
 ```
 
 On the main node (.104):
 
 ```sh
-VK_ICD_FILENAMES=/path/radeon_devenv_icd.x86_64.json \
 ./build/bin/llama-server -m flint-UD-Q4_K_XL.gguf --host 0.0.0.0 --port 8080 \
   -t 10 -tb 10 -C 0xffff --cpu-strict 1 --poll 50 \
   -b 4096 -ub 1024 -ctk q8_0 -ctv q8_0 -fa on \
@@ -74,7 +67,6 @@ Notes:
 | Env | Effect |
 |-----|--------|
 | `GGML_VK_FA_QUANT_STAGING=1` | FA LDS staging for quantized K/V (patch 0003). Correct, ~neutral at tested depths; may help at very long ctx. Off by default. |
-| `VK_ICD_FILENAMES=...` | Select the patched RADV driver (int dot). Recommended. |
 
 ## 6. Benchmark
 
@@ -94,4 +86,6 @@ also includes prompt processing + HTTP.
 - flint pre-tokenizer (0001): no musl stack-overflow segfault on long whitespace/CJK.
 - RPC pre-split (0002): large-ctx RPC reserve no longer OOM-kills the remote.
 - FA quant-KV staging (0003): optional, neutral perf.
-- bc250-mesa int dot (driver): +30% pp, ~4.3x MoE matvec — the main speedup.
+- bc250-mesa int dot (driver): **RETRACTED — harmful.** gfx1013 dot opcodes write
+  zero/garbage; stock Mesa (int dot off) is correct. The real levers are packed
+  FP16 / mix / INT24 / DPP, already used by the FP16 path. See bc250-mesa docs.
