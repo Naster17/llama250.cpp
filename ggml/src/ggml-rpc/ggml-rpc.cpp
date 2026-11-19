@@ -520,7 +520,7 @@ public:
     }
 
     void send(enum rpc_cmd cmd, std::shared_ptr<const void> input, size_t input_size, const void * payload, size_t payload_size, void * output, size_t output_size);
-    void send_async(enum rpc_cmd cmd, std::shared_ptr<const void> input, size_t input_size, void * output = nullptr, size_t output_size = 0);
+    std::shared_future<void> send_async(enum rpc_cmd cmd, std::shared_ptr<const void> input, size_t input_size, void * output = nullptr, size_t output_size = 0, const void * payload = nullptr, size_t payload_size = 0, std::shared_future<void> wait_before = {}, std::shared_ptr<const void> payload_holder = nullptr);
 
     ggml_backend_event_t event_new(ggml_backend_dev_t dev);
     void event_free(ggml_backend_event_t event);
@@ -548,6 +548,9 @@ private:
         const void                  * payload      = nullptr;
         size_t                        payload_size = 0;
         std::promise<void>            completion;
+        // cross-server copies: worker waits on this before processing (queue position keeps ordering)
+        std::shared_future<void>      wait_before;
+        std::shared_ptr<const void>   payload_holder;
     };
     using rpc_msg_ptr   = std::shared_ptr<rpc_msg>;
     using rpc_msg_queue = message_queue<rpc_msg_ptr>;
@@ -589,14 +592,19 @@ void rpc_dispatcher::send(enum rpc_cmd cmd, std::shared_ptr<const void> input, s
     future.wait();
 }
 
-void rpc_dispatcher::send_async(enum rpc_cmd cmd, std::shared_ptr<const void> input, size_t input_size, void * output, size_t output_size) {
+std::shared_future<void> rpc_dispatcher::send_async(enum rpc_cmd cmd, std::shared_ptr<const void> input, size_t input_size, void * output, size_t output_size, const void * payload, size_t payload_size, std::shared_future<void> wait_before, std::shared_ptr<const void> payload_holder) {
     auto msg = std::make_shared<rpc_msg>();
     msg->cmd = cmd;
     msg->input = std::move(input);
     msg->input_size = input_size;
     msg->output = output;
     msg->output_size = output_size;
+    msg->payload = payload;
+    msg->payload_size = payload_size;
+    msg->wait_before = std::move(wait_before);
+    msg->payload_holder = std::move(payload_holder);
     GGML_ASSERT(queue.push(msg));
+    return msg->completion.get_future().share();
 }
 
 ggml_backend_event_t rpc_dispatcher::event_new(ggml_backend_dev_t dev) {
@@ -687,6 +695,9 @@ void rpc_dispatcher::work() {
             }
         } else if (!queue.pop(&msg_ptr)) {
             break;
+        }
+        if (msg_ptr->wait_before.valid()) {
+            msg_ptr->wait_before.wait();
         }
         if (msg_ptr->cmd != RPC_CMD_NONE) {
             LOG_DBG2("[%s] %s (in: %s, out: %s)\n", __func__, rpc_cmd_name(msg_ptr->cmd),
@@ -1249,6 +1260,23 @@ static void ggml_backend_rpc_set_tensor_async(ggml_backend_t backend, ggml_tenso
         // the server has no cache entry for this tensor - ask it to save one
         cache_flag = 1;
     }
+    if (rpc_wire_q8_0_eligible(tensor, offset, size)) {
+        const size_t n_blocks = size / 128;
+        auto wire = std::make_shared<std::vector<block_q8_0>>(n_blocks);
+        quantize_row_q8_0_ref((const float *) data, wire->data(), (int64_t) (size / 4));
+        size_t header_size;
+        auto header = serialize_set_tensor(rpc_tensor, cache_flag | 4, offset, nullptr, 0, header_size);
+        ctx->dispatcher->send_async(RPC_CMD_SET_TENSOR, header, header_size, nullptr, 0, wire->data(), n_blocks * sizeof(block_q8_0), {}, wire);
+        return;
+    }
+    if (rpc_wire_bf16_eligible(tensor, offset, size)) {
+        auto wire = std::make_shared<std::vector<ggml_bf16_t>>(size / 4);
+        ggml_fp32_to_bf16_row((const float *) data, wire->data(), (int64_t) (size / 4));
+        size_t header_size;
+        auto header = serialize_set_tensor(rpc_tensor, cache_flag | 2, offset, nullptr, 0, header_size);
+        ctx->dispatcher->send_async(RPC_CMD_SET_TENSOR, header, header_size, nullptr, 0, wire->data(), wire->size() * sizeof(ggml_bf16_t), {}, wire);
+        return;
+    }
     size_t input_size;
     auto input = serialize_set_tensor(rpc_tensor, cache_flag, offset, data, size, input_size);
     ctx->dispatcher->send_async(RPC_CMD_SET_TENSOR, input, input_size);
@@ -1263,6 +1291,51 @@ static void ggml_backend_rpc_get_tensor_async(ggml_backend_t backend, const ggml
     request->offset = offset;
     request->size = size;
     ctx->dispatcher->send_async(RPC_CMD_GET_TENSOR, request, sizeof(*request), data, size);
+}
+
+// Async cross-backend copies for pipeline parallelism: queue the transfer instead of
+// synchronizing both backends. Cross-server copies chain GET->SET via wait_before;
+// copies are submitted from one thread, so per-queue order stays acyclic.
+static bool ggml_backend_rpc_cpy_tensor_async(ggml_backend_t backend_src, ggml_backend_t backend_dst, const ggml_tensor * src, ggml_tensor * dst) {
+    static const bool enabled = getenv("GGML_RPC_ASYNC_COPY") != nullptr;
+    if (!enabled) {
+        return false;
+    }
+    const size_t nbytes = ggml_nbytes(src);
+    const bool src_host = ggml_backend_buffer_is_host(src->buffer);
+    const bool dst_host = ggml_backend_buffer_is_host(dst->buffer);
+    const bool src_rpc = ggml_backend_buffer_is_rpc(src->buffer);
+    const bool dst_rpc = ggml_backend_buffer_is_rpc(dst->buffer);
+    if (dst_rpc && src_host) {
+        ggml_backend_rpc_set_tensor_async(backend_dst, dst, src->data, 0, nbytes);
+        return true;
+    }
+    if (src_rpc && dst_host) {
+        ggml_backend_rpc_get_tensor_async(backend_src, src, dst->data, 0, nbytes);
+        return true;
+    }
+    if (src_rpc && dst_rpc) {
+        auto * src_ctx = (ggml_backend_rpc_buffer_context *)src->buffer->context;
+        auto * dst_ctx = (ggml_backend_rpc_buffer_context *)dst->buffer->context;
+        if (src_ctx->dispatcher == dst_ctx->dispatcher) {
+            // same server: sync fallback uses the local COPY_TENSOR path
+            return false;
+        }
+        const bool bf16 = rpc_wire_bf16_eligible(src, 0, nbytes);
+        const size_t wire_size = bf16 ? nbytes / 2 : nbytes;
+        auto staging = std::make_shared<std::vector<uint8_t>>(wire_size);
+        auto get_req = std::make_shared<rpc_msg_get_tensor_req>();
+        get_req->tensor = serialize_tensor(src);
+        get_req->offset = 0;
+        get_req->size = nbytes;
+        get_req->flags = bf16 ? 1 : 0;
+        auto get_done = src_ctx->dispatcher->send_async(RPC_CMD_GET_TENSOR, get_req, sizeof(*get_req), staging->data(), wire_size);
+        size_t header_size;
+        auto header = serialize_set_tensor(serialize_tensor(dst), bf16 ? 2 : 0, 0, nullptr, 0, header_size);
+        dst_ctx->dispatcher->send_async(RPC_CMD_SET_TENSOR, header, header_size, nullptr, 0, staging->data(), wire_size, get_done, staging);
+        return true;
+    }
+    return false;
 }
 
 static void ggml_backend_rpc_synchronize(ggml_backend_t backend) {
@@ -1384,7 +1457,7 @@ static ggml_backend_i ggml_backend_rpc_interface = {
     /* .get_tensor_async        = */ ggml_backend_rpc_get_tensor_async,
     /* .set_tensor_2d_async     = */ ggml_backend_rpc_set_tensor_2d_async,
     /* .get_tensor_2d_async     = */ ggml_backend_rpc_get_tensor_2d_async,
-    /* .cpy_tensor_async        = */ NULL,
+    /* .cpy_tensor_async        = */ ggml_backend_rpc_cpy_tensor_async,
     /* .synchronize             = */ ggml_backend_rpc_synchronize,
     /* .graph_plan_create       = */ NULL,
     /* .graph_plan_free         = */ NULL,
