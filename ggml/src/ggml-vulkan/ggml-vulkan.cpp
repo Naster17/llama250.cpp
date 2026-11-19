@@ -2163,6 +2163,12 @@ void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested) {
             // Share the output tile across more threads to reduce register use.
             l_warptile = { 256, 128, 128, 16, 32, 64, 2, tm_l, tn_l, tk_l, 32 };
             l_warptile_mmq = { 256, 128, 128, 32, 32, 64, 2, tm_l, tn_l, tk_l, 32 };
+            // GGML_VK_BC250_MMID_TUNE bit 2: same output-tile sharing for the MoE ID tiles
+            static const int bc250_mmid_large = getenv("GGML_VK_BC250_MMID_TUNE") != nullptr ? atoi(getenv("GGML_VK_BC250_MMID_TUNE")) : 0;
+            if (bc250_mmid_large & 2) {
+                l_warptile_id = { 256, 128, 128, 16, 32, 64, 2, tm_l, tn_l, tk_l, 32 };
+                l_warptile_mmqid = { 256, 128, 128, 32, 32, 64, 2, tm_l, tn_l, tk_l, 32 };
+            }
         } else if ((device->architecture == AMD_GCN) && (device->driver_id != vk::DriverId::eAmdProprietary)) {
             m_warptile_mmq = m_warptile_mmq_int = { 256, 64, 64, 32, 16, 16, 2, 2, 2, 1, 16 };
             m_warptile_mmqid = m_warptile_mmqid_int = { 256, 64, 64, 32, 16, 16, 2, 2, 2, 1, 16 };
@@ -3301,6 +3307,18 @@ void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested) {
             return last;
         };
         device->matmul_id_tile_selector = device->matmul_tile_selector;
+        // MoE ID: n is the average routed rows per expert; the grid expands per expert,
+        // so skip the occupancy downgrade and fit the tile to one expert's rows
+        if (bc250_scalar && getenv("GGML_VK_BC250_MMID_TUNE") != nullptr && (atoi(getenv("GGML_VK_BC250_MMID_TUNE")) & 1)) {
+            device->matmul_id_tile_selector = [](uint32_t m, uint32_t n, uint32_t /*k*/, uint32_t /*shader_core_count*/,
+                                                 const std::vector<vk_matmul_pipeline_pair>& configs) -> uint32_t {
+                if (configs.size() <= 1) return 0;
+                uint32_t last = (uint32_t)configs.size() - 1;
+                if (m <= 32 || n <= 32) return 0;
+                if (last == 1 || m <= 64 || n <= 64) return 1;
+                return last;
+            };
+        }
     }
 
     // mul mat vec
@@ -5358,6 +5376,7 @@ vk_device ggml_vk_get_device(size_t idx) {
 
         // Shaders
         // Disable matmul tile sizes early if performance low or not supported
+        const bool bc250_mmid_l = ggml_vk_is_bc250_scalar(device) && getenv("GGML_VK_BC250_MMID_TUNE") != nullptr && (atoi(getenv("GGML_VK_BC250_MMID_TUNE")) & 1);
         for (uint32_t i = 0; i < GGML_TYPE_COUNT; ++i) {
             switch (device->vendor_id) {
 #ifndef GGML_VULKAN_RUN_TESTS
@@ -5365,7 +5384,7 @@ vk_device ggml_vk_get_device(size_t idx) {
                 device->mul_mat_l[i]    = (device->coopmat_support && ggml_vk_amd_large_tile_supported(device)) || ggml_vk_is_bc250_scalar(device);
                 device->mul_mat_m[i]    = true;
                 device->mul_mat_s[i]    = true;
-                device->mul_mat_id_l[i] = false;
+                device->mul_mat_id_l[i] = bc250_mmid_l;
                 device->mul_mat_id_m[i] = true;
                 device->mul_mat_id_s[i] = true;
                 break;
@@ -8278,10 +8297,13 @@ static void ggml_vk_mul_mat_id_q_f16(ggml_backend_vk_context * ctx, vk_context& 
                                                   y_decode_vector_staging || y_needs_k_padding);
     const bool qy_needs_dequant = y_needs_reformat;
 
-    const uint32_t kpad = quantize_y ? 0 : ggml_vk_align_size(ne10, ggml_vk_guess_matmul_pipeline_align_map(ctx, *mmp_map, ne01, nei1, true));
+    // ID tiles are per-expert; select by the average routed rows per expert, not token count
+    const bool bc250_mmid_l = ggml_vk_is_bc250_scalar(ctx->device) && getenv("GGML_VK_BC250_MMID_TUNE") != nullptr && (atoi(getenv("GGML_VK_BC250_MMID_TUNE")) & 1);
+    const uint32_t n_tile_sel = bc250_mmid_l ? (uint32_t)CEIL_DIV(nei0 * nei1, std::max<uint64_t>(1, n_as)) : nei1;
+    const uint32_t kpad = quantize_y ? 0 : ggml_vk_align_size(ne10, ggml_vk_guess_matmul_pipeline_align_map(ctx, *mmp_map, ne01, n_tile_sel, true));
     const bool aligned = !quantize_y && ne10 == kpad && ne01 > 8 && nei1 > 8;
 
-    vk_pipeline pipeline = ggml_vk_guess_matmul_pipeline_map(ctx, *mmp_map, ne01, nei1, aligned, true);
+    vk_pipeline pipeline = ggml_vk_guess_matmul_pipeline_map(ctx, *mmp_map, ne01, n_tile_sel, aligned, true);
 
     const uint32_t bn = pipeline->wg_denoms[1];
     const uint64_t max_tiles = ggml_vk_mul_mat_id_max_tiles(n_as, nei0 * nei1, bn);
