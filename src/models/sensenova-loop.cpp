@@ -104,43 +104,27 @@ std::unique_ptr<llm_graph_context> llama_model_sensenova_loop::build_arch_graph(
 
 llama_model_sensenova_loop::graph::routing llama_model_sensenova_loop::graph::build_route(
         ggml_tensor * a, ggml_tensor * b, ggml_tensor * weight, ggml_tensor * bias, int il) {
-    ggml_tensor * flat = ggml_concat(ctx0, a, b, 0);
-    flat = ggml_rms_norm(ctx0, flat, 1e-6f);
-    ggml_tensor * logits = build_lora_mm(weight, flat);
-    if (logits->op == GGML_OP_MUL_MAT) {
-        ggml_prec_set_acc(logits, GGML_PREC_F32);
-        ggml_prec_set_src(logits, GGML_PREC_F32, 1);
-    }
-    logits = ggml_add(ctx0, logits, bias);
-    auto row = [&](int i) {
-        return ggml_view_2d(ctx0, logits, 1, a->ne[1], logits->nb[1], i*logits->nb[0]);
-    };
+    // the fused kernel hardcodes the trained mHC config: 20 sinkhorn passes, unit pre-scale, learned mix
+    GGML_ASSERT(hparams.mhc_iterations == 20 && hparams.mhc_pre_scale == 1.0f && !hparams.mhc_fixed_identity);
 
     routing result{};
-    result.input = ggml_add(ctx0, ggml_mul(ctx0, a, ggml_sigmoid(ctx0, row(0))), ggml_mul(ctx0, b, ggml_sigmoid(ctx0, row(1))));
-    result.input = ggml_scale(ctx0, result.input, hparams.mhc_pre_scale);
-    result.post[0] = ggml_scale(ctx0, ggml_sigmoid(ctx0, row(2)), 2.0f);
-    result.post[1] = ggml_scale(ctx0, ggml_sigmoid(ctx0, row(3)), 2.0f);
-    if (!hparams.mhc_fixed_identity) {
-        for (int i = 0; i < 4; ++i) {
-            result.mix[i] = row(4 + i);
-        }
-        build_sinkhorn(ctx0, result.mix, hparams.mhc_iterations);
-    }
-    cb(result.input, "mhc_input", il);
+    result.packed = ggml_mhc_route(ctx0, a, b, weight, bias);
+    cb(result.packed, "mhc_packed", il);
+
+    const int64_t d = a->ne[0];
+    result.input = ggml_view_3d(ctx0, result.packed, d, result.packed->ne[1], result.packed->ne[2],
+            result.packed->nb[1], result.packed->nb[2], 0);
     return result;
 }
 
 void llama_model_sensenova_loop::graph::build_merge(
         ggml_tensor * & a, ggml_tensor * & b, ggml_tensor * branch, const routing & route) {
-    ggml_tensor * next_a = a;
-    ggml_tensor * next_b = b;
-    if (!hparams.mhc_fixed_identity) {
-        next_a = ggml_add(ctx0, ggml_mul(ctx0, a, route.mix[0]), ggml_mul(ctx0, b, route.mix[1]));
-        next_b = ggml_add(ctx0, ggml_mul(ctx0, a, route.mix[2]), ggml_mul(ctx0, b, route.mix[3]));
-    }
-    a = ggml_add(ctx0, next_a, ggml_mul(ctx0, branch, route.post[0]));
-    b = ggml_add(ctx0, next_b, ggml_mul(ctx0, branch, route.post[1]));
+    ggml_tensor * merged = ggml_mhc_merge(ctx0, a, b, branch, route.packed);
+    cb(merged, "mhc_merged", -1);
+
+    const int64_t d = a->ne[0];
+    a = ggml_view_3d(ctx0, merged, d, merged->ne[1], merged->ne[2], merged->nb[1], merged->nb[2], 0);
+    b = ggml_view_3d(ctx0, merged, d, merged->ne[1], merged->ne[2], merged->nb[1], merged->nb[2], (size_t) d*merged->nb[0]);
 }
 
 llama_model_sensenova_loop::graph::graph(const llm_graph_params & params) : graph_base(params) {
@@ -179,10 +163,7 @@ llama_model_sensenova_loop::graph::graph(const llm_graph_params & params) : grap
             if (mhc) {
                 a = ggml_get_rows(ctx0, a, inp_out_ids);
                 b = ggml_get_rows(ctx0, b, inp_out_ids);
-                for (auto & post : attn_route.post) { post = ggml_get_rows(ctx0, post, inp_out_ids); }
-                if (!hparams.mhc_fixed_identity) {
-                    for (auto & mix : attn_route.mix) { mix = ggml_get_rows(ctx0, mix, inp_out_ids); }
-                }
+                attn_route.packed = ggml_get_rows(ctx0, attn_route.packed, inp_out_ids);
             }
         }
         if (mhc) {
