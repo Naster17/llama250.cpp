@@ -1290,12 +1290,17 @@ static vk_fa_tuning_params get_fa_tuning_params_scalar(const vk_device& device, 
     result.d_split = std::min(std::min(result.subgroup_size, 8u), D_lsb / 4);
 
     static const bool fa_quant_staging = getenv("GGML_VK_FA_QUANT_STAGING") != nullptr;
+    // BC-250 staging extensions: 1 = prefill rows, 2 = shallow KV, 4 = head dims <= 256 other than 128/256
+    static const int fa_staging_ext = getenv("GGML_VK_FA_STAGING_EXT") != nullptr ? atoi(getenv("GGML_VK_FA_STAGING_EXT")) : 0;
     const bool bc250_kv_ok = (k_type == GGML_TYPE_F16 && v_type == GGML_TYPE_F16) ||
         (fa_quant_staging && k_type == v_type &&
          (k_type == GGML_TYPE_Q8_0 || k_type == GGML_TYPE_Q4_0 || k_type == GGML_TYPE_Q4_1 ||
           k_type == GGML_TYPE_Q5_0 || k_type == GGML_TYPE_Q5_1));
-    const bool bc250_staging = ggml_vk_is_bc250_scalar(device) && n_rows <= 8 && n_kv >= 4096 &&
-                               hsk == hsv && (hsk == 128 || hsk == 256) && bc250_kv_ok;
+    const bool bc250_staging = ggml_vk_is_bc250_scalar(device) &&
+                               (n_rows <= 8 || (fa_staging_ext & 1)) &&
+                               (n_kv >= 4096 || (fa_staging_ext & 2)) &&
+                               hsk == hsv && (hsk == 128 || hsk == 256 || ((fa_staging_ext & 4) && hsk <= 256)) &&
+                               bc250_kv_ok;
     result.shmem_staging = ((device->vendor_id == VK_VENDOR_ID_NVIDIA && hsk < 256 && hsv < 256) || bc250_staging) ? 1 : 0;
 
     if (!reduce_block_rows && result.block_rows > 1 && !ggml_vk_flash_attn_scalar_shmem_support(device, result, hsk, hsv, f32acc, k_type, v_type)) {
