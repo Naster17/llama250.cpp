@@ -98,8 +98,9 @@ a client wall-time "TG tok/s" also includes prompt processing + HTTP.
 
 ## General tuning notes (BC-250)
 
-- `-t 10 -tb 10`: 6 Zen2 cores / 12 threads; 10 is a good default. `-C 0xffff
-  --cpu-strict 1 --poll 50` pins affinity (optional; can reduce jitter).
+- `-t 10 -tb 10`: 8 Zen2 cores / 16 threads (core unlock active); 10 is a safe
+  default, sweep 12-16. `-C 0xffff --cpu-strict 1 --poll 50` pins affinity
+  (optional; can reduce jitter).
 - `-fa on`: flash attention (scalar path on RDNA2, no matrix cores).
 - `-ngl 99`: offload all layers; reduce if a model + KV exceeds 16 GB.
 - Governor: keep GPU clock high under load (cyan-skillfish-governor); tg is

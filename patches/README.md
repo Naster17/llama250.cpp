@@ -16,7 +16,7 @@ refines 0004 (gate the pre-split to RPC backends only).
 | # | File | Area | Purpose |
 |---|------|------|---------|
 | 0001 | `0001-vulkan-BC-250-gfx1013-scalar-path-tuning-and-UMA-mma.patch` | `ggml-vulkan.cpp`, `ggml-vulkan-types.h` | BC-250 gfx1013 scalar-path tuning (workgroup/row sizes for the no-matrix-core RDNA2 scalar FA/matvec) + UMA mmap handling. The base fork tuning. |
-| 0002 | `0002-rpc-optional-BF16-wire-for-layer-split-activations.patch` | `ggml-rpc.cpp`, `transport.cpp` | Optional BF16 wire format for layer-split RPC activations (halves activation traffic over the 2.5GbE link). |
+| 0002 | `0002-rpc-optional-BF16-wire-for-layer-split-activations.patch` | `ggml-rpc.cpp`, `transport.cpp` | Optional BF16 wire format for layer-split RPC activations (halves activation traffic over the 1GbE link). |
 | 0003 | `0003-unicode-non-backtracking-flint-pre-tokenizer-handler.patch` | `src/unicode.cpp`, `tests/test-unicode.cpp` | Non-backtracking flint pre-tokenizer (digits/CJK/words). Fixes musl libc stack-overflow SIGSEGV on long whitespace/CJK runs. Mirrors upstream `3e528431e`+`6f55fb55e` (now also upstream after the merge). |
 | 0004 | `0004-llama-pre-split-graph-before-sched_reserve.patch` | `src/llama-context.cpp` | Pre-split graph before `ggml_backend_sched_reserve`. Fixes RPC compute over-allocation (1790 -> 534 MiB) that OOM-killed the remote at ctx 200k. |
 | 0005 | `0005-vulkan-env-gated-FA-quant-KV-LDS-staging-for-BC-250.patch` | `ggml-vulkan.cpp` | Extend BC-250 scalar FA LDS staging from F16-only to quantized K/V, env-gated `GGML_VK_FA_QUANT_STAGING=1`. Correct, ~neutral perf at tested depths. |
@@ -40,12 +40,14 @@ If a patch no longer applies after upstream moves, rebase with
 `git apply --3way patches/000X-*.patch`. Note 0003 is already in recent upstream
 (flint support landed there), so it may be redundant on a fresh upstream tree.
 
-## Companion driver patch (separate repo)
+## Companion driver patch: RETRACTED (do not use)
 
-The biggest BC-250 win is the Mesa RADV int-dot enablement — `Naster17/bc250-mesa`
-(`patches/0001-ac-gpu_info-enable-int-dot-gfx1013.patch` there). It unlocks
-`VK_KHR_shader_integer_dot_product` on gfx1013: ~4.3x MoE matvec, +30% prompt
-processing. Use the patched `libvulkan_radeon.so` via `VK_ICD_FILENAMES`.
+The old `Naster17/bc250-mesa` int-dot enablement patch is HARMFUL on gfx1013:
+the dot opcodes (`v_dot2/4/8`, `v_dot4c`) write zero or SI-era legacy float
+min, so `MUL_MAT_ID` returns ERR ~ 1.0 for every quant. The earlier "4.3x MoE
+matvec, +30% pp" claim came from perf-only runs without correctness checks.
+Use stock Mesa (int dot OFF). See `Naster17/bc250-mesa`
+`docs/GFX1013-DOT-HAZARD.md` and docs/BC250-USAGE.md sec. 2.
 
 ## Not included here
 

@@ -9,7 +9,7 @@
 #   PORT=8080            HTTP port
 #   CTX=0                context size (0 = model default / train ctx)
 #   NGL=99               GPU layers (99 = all)
-#   THREADS=10           CPU threads (BC-250: 6 cores / 12 threads)
+#   THREADS=10           CPU threads (BC-250: 8 cores / 16 threads unlocked; sweep 10-16)
 #   RPC=host:port        enable 2-node layer-split RPC (run rpc-server.sh on peer)
 #   TS=50,50             tensor split when RPC set
 #   KVU=1                unified KV (prompt caching); set 0 for separate SWA cache
