@@ -1,0 +1,45 @@
+From 02476784371de1c8920033cd04f679b6410f131b Mon Sep 17 00:00:00 2001
+From: Naster17 <naster17.dev@gmail.com>
+Date: Thu, 19 Nov 2026 17:40:59 +0100
+Subject: [PATCH] vulkan : IQ3_XXS dequant sign via conditional negation
+
+Replace grid*(sign?-1:1) multiply with conditional negation (free source modifier on RDNA2) in the pp dequant path. Ripple-65B pp512 57.6->60.9 t/s on 2xBC-250 RPC; 2604/2604 backend ops OK.
+
+Assisted-by: Qwen3.8-Max
+---
+ .../ggml-vulkan/vulkan-shaders/dequant_funcs.glsl    | 12 ++++++------
+ 1 file changed, 6 insertions(+), 6 deletions(-)
+
+diff --git a/ggml/src/ggml-vulkan/vulkan-shaders/dequant_funcs.glsl b/ggml/src/ggml-vulkan/vulkan-shaders/dequant_funcs.glsl
+index 911ceac22..9b84bba63 100644
+--- a/ggml/src/ggml-vulkan/vulkan-shaders/dequant_funcs.glsl
++++ b/ggml/src/ggml-vulkan/vulkan-shaders/dequant_funcs.glsl
+@@ -381,8 +381,8 @@ vec2 dequantize(uint ib, uint iqs, uint a_offset) {
+     bool sign0 = (sign & 1) != 0;
+     bool sign1 = (sign & 2) != 0;
+     return db * vec2(
+-        grid.x * (sign0 ? -1.0 : 1.0),
+-        grid.y * (sign1 ? -1.0 : 1.0)
++        sign0 ? -float(grid.x) : float(grid.x),
++        sign1 ? -float(grid.y) : float(grid.y)
+     );
+ }
+ vec4 dequantize4(uint ib, uint iqs, uint a_offset) {
+@@ -403,10 +403,10 @@ vec4 dequantize4(uint ib, uint iqs, uint a_offset) {
+     bool sign2 = (sign & 4) != 0;
+     bool sign3 = (sign & 8) != 0;
+     return db * vec4(
+-        grid.x * (sign0 ? -1.0 : 1.0),
+-        grid.y * (sign1 ? -1.0 : 1.0),
+-        grid.z * (sign2 ? -1.0 : 1.0),
+-        grid.w * (sign3 ? -1.0 : 1.0)
++        sign0 ? -float(grid.x) : float(grid.x),
++        sign1 ? -float(grid.y) : float(grid.y),
++        sign2 ? -float(grid.z) : float(grid.z),
++        sign3 ? -float(grid.w) : float(grid.w)
+     );
+ }
+ #endif
+-- 
+2.56.1
+
