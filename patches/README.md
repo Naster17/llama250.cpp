@@ -26,6 +26,7 @@ refines 0004 (gate the pre-split to RPC backends only).
 | 0009 | `0009-sensenova_loop-use-fused-mHC-ops.patch` | `src/models/` | sensenova_loop graph routes/merges via the fused ops; crops the packed tensor for MTP. On BC-250: pp512 45->382 (8.5x), tg128 7.4->21.7 (2.9x). |
 | 0010 | `0010-tests-mHC-route-merge-backend-ops.patch` | `tests/test-backend-ops.cpp` | mHC route/merge backend-op tests (view/non-view, d=4096/1000, n_tok=1/7/512); 18/18 OK on Vulkan0. |
 | 0011 | `0011-llama-gate-pre-split-graph-to-RPC-backends.patch` | `src/llama-context.cpp` | Gate the 0004 pre-split to RPC backends only. Local-only graphs split better lazily; recovers qwen3vl local pp while keeping the RPC OOM fix. |
+| 0012 | `0012-rpc-optional-Q8_0-activation-wire-GGML_RPC_WIRE_Q8_0.patch` | `ggml/src/ggml-rpc/ggml-rpc.cpp` | Opt-in Q8_0 activation wire (`GGML_RPC_WIRE_Q8_0=1`): quantize F32 split-boundary activations to Q8_0 (~3.8x smaller than F32, ~1.9x vs BF16) to cut pp wire traffic on slow RPC links. Block-aligned chunked transfer; server dequantizes unconditionally. |
 
 ## Apply (to a clean upstream checkout)
 
