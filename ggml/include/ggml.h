@@ -429,6 +429,9 @@ extern "C" {
 
         GGML_OP_GLU,
 
+        GGML_OP_MHC_ROUTE,
+        GGML_OP_MHC_MERGE,
+
         GGML_OP_COUNT,
     };
 
@@ -2296,6 +2299,21 @@ extern "C" {
             struct ggml_context * ctx,
             struct ggml_tensor  * sx,
             struct ggml_tensor  * c);
+
+    // fused mHC residual-stream routing (SenseNova Loop): route packs branch+gates, merge mixes back
+    GGML_API struct ggml_tensor * ggml_mhc_route(
+            struct ggml_context * ctx,
+            struct ggml_tensor  * a,
+            struct ggml_tensor  * b,
+            struct ggml_tensor  * w,
+            struct ggml_tensor  * bias);
+
+    GGML_API struct ggml_tensor * ggml_mhc_merge(
+            struct ggml_context * ctx,
+            struct ggml_tensor  * a,
+            struct ggml_tensor  * b,
+            struct ggml_tensor  * x,
+            struct ggml_tensor  * packed);
 
     GGML_API struct ggml_tensor * ggml_ssm_scan(
             struct ggml_context * ctx,
