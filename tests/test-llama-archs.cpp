@@ -7,6 +7,7 @@
 #include "llama.h"
 #include "llama-cpp.h"
 #include "../src/llama-ext.h"
+#include "../src/models/models.h"
 
 #include <algorithm>
 #include <cinttypes>
@@ -326,6 +327,8 @@ static gguf_context_ptr get_gguf_ctx(const llm_arch arch, const bool moe, const 
         n_vocab = 3072; // TODO: should be 4096, but user code cannot get `n_vocab_out` yet [TAG_LLAMA_N_VOCAB_OUT]
     } else if (arch == LLM_ARCH_HRM_TEXT) {
         n_layer = 6; // 1 layer per stack x 2 h-cycles x (2 l-cycles + 1) cache slots
+    } else if (arch == LLM_ARCH_SENSENOVA_LOOP) {
+        n_layer = 6; // 4 physical layers, with the middle 2 visited twice
     } else if (arch == LLM_ARCH_INKLING2) {
         n_embd  = 128;
         n_head  = 4;
@@ -378,6 +381,23 @@ static gguf_context_ptr get_gguf_ctx(const llm_arch arch, const bool moe, const 
     ms.add_kv(LLM_KV_TIME_MIX_EXTRA_DIM,      uint32_t(64));
     ms.add_kv(LLM_KV_TIME_DECAY_EXTRA_DIM,    uint32_t(128));
     ms.add_kv(LLM_KV_FULL_ATTENTION_INTERVAL, uint32_t(2));
+
+    if (arch == LLM_ARCH_SENSENOVA_LOOP) {
+        ms.add_kv(LLM_KV_LOOP_START,         uint32_t(1));
+        ms.add_kv(LLM_KV_LOOP_END,           uint32_t(3));
+        ms.add_kv(LLM_KV_LOOP_COUNT,         uint32_t(2));
+        ms.add_kv(LLM_KV_MHC_START,          uint32_t(1));
+        ms.add_kv(LLM_KV_MHC_END,            uint32_t(3));
+        ms.add_kv(LLM_KV_MHC_STREAMS,        uint32_t(2));
+        ms.add_kv(LLM_KV_MHC_ITERATIONS,     uint32_t(20));
+        ms.add_kv(LLM_KV_MHC_PRE_SCALE,      1.0f);
+        ms.add_kv(LLM_KV_MHC_FIXED_IDENTITY, false);
+        std::vector<uint32_t> recurrent;
+        for (uint32_t il = 0; il < n_layer; ++il) {
+            recurrent.push_back(il % 2 == 0);
+        }
+        ms.add_kv(LLM_KV_ATTENTION_RECURRENT_LAYERS, recurrent);
+    }
 
     if (arch == LLM_ARCH_PLAMO2 || arch == LLM_ARCH_JAMBA || arch == LLM_ARCH_NEMOTRON_H || arch == LLM_ARCH_NEMOTRON_H_MOE ||
             arch == LLM_ARCH_GRANITE_HYBRID || arch == LLM_ARCH_LFM2 || arch == LLM_ARCH_LFM2MOE || arch == LLM_ARCH_LFM3 ||
@@ -799,7 +819,7 @@ static gguf_context_ptr get_gguf_ctx(const llm_arch arch, const bool moe, const 
     ms.add_kv(LLM_KV_XIELU_ALPHA_P,             1.0f);
     ms.add_kv(LLM_KV_XIELU_BETA,                1.0f);
     ms.add_kv(LLM_KV_XIELU_EPS,                 1.0e-7f);
-    ms.add_kv(LLM_KV_SSM_INNER_SIZE,            arch == LLM_ARCH_QWEN3NEXT || arch == LLM_ARCH_QWEN35 || arch == LLM_ARCH_QWEN35MOE || arch == LLM_ARCH_QWEN4EXP || arch == LLM_ARCH_CLOVER_MOE || arch == LLM_ARCH_ZONOS3 ? 256 : 2*n_embd);
+    ms.add_kv(LLM_KV_SSM_INNER_SIZE,            arch == LLM_ARCH_QWEN3NEXT || arch == LLM_ARCH_QWEN35 || arch == LLM_ARCH_SENSENOVA_LOOP || arch == LLM_ARCH_QWEN35MOE || arch == LLM_ARCH_QWEN4EXP || arch == LLM_ARCH_CLOVER_MOE || arch == LLM_ARCH_ZONOS3 ? 256 : 2*n_embd);
     ms.add_kv(LLM_KV_ROUTER_HIDDEN_SIZE,        n_embd);
     ms.add_kv(LLM_KV_SSM_CONV_KERNEL,           uint32_t(arch == LLM_ARCH_ZAYA1 ? 2 : 4)); // ZAYA CCA convs have kernel 2
     ms.add_kv(LLM_KV_SSM_STATE_SIZE,            uint32_t(128));
@@ -855,7 +875,7 @@ static llama_model_ptr get_model(
         struct gguf_context * gguf_ctx, FILE * file, const size_t seed, const float stdev,
         const std::vector<ggml_backend_dev_t> & devs,
         const llama_split_mode split_mode = LLAMA_SPLIT_MODE_LAYER,
-        const llama_model_tensor_buft_override * tensor_buft_overrides = nullptr) {
+        const llama_model_tensor_buft_override * tensor_buft_overrides = nullptr, bool load_mtp = false) {
     GGML_ASSERT((gguf_ctx == nullptr) != (file == nullptr));
     llama_model_params model_params = llama_model_default_params();
     model_params.progress_callback = silent_model_load_progress;
@@ -864,6 +884,7 @@ static llama_model_ptr get_model(
     model_params.devices = devs_copy.data();
     model_params.split_mode = split_mode;
     model_params.tensor_buft_overrides = tensor_buft_overrides;
+    model_params.load_mtp = load_mtp;
 
     tensor_data_params tensor_params = { seed, stdev };
     llama_model_ptr model(gguf_ctx != nullptr ?
@@ -930,6 +951,134 @@ static std::vector<float> get_logits(
         }
     }
     return ret;
+}
+
+static void check_loop_sinkhorn(const size_t seed, const char * target_backend) {
+    std::vector<std::array<float, 4>> values = {
+        {0, 0, 0, 0}, {2, 2, 2, 2}, {-10, 1, 9, -2},
+        {2000, 0, 1000, 0}, {-2000, 0, -1000, 0},
+        {2e6f, 0, 1e6f, 0}, {-2e6f, 0, -1e6f, 0},
+        {-10000, 10000, 10000, -10000},
+        {1e6f, 1e6f + 1, -1e6f, -1e6f + 2},
+    };
+    std::mt19937 rng(seed);
+    std::uniform_real_distribution<float> dist(-32.0f, 32.0f);
+    for (int i = 0; i < 128; ++i) {
+        values.push_back({dist(rng), dist(rng), dist(rng), dist(rng)});
+    }
+
+    for (size_t id = 0; id < ggml_backend_dev_count(); ++id) {
+        ggml_backend_dev_t dev = ggml_backend_dev_get(id);
+        const auto type = ggml_backend_dev_type(dev);
+        if ((type != GGML_BACKEND_DEVICE_TYPE_CPU && type != GGML_BACKEND_DEVICE_TYPE_GPU && type != GGML_BACKEND_DEVICE_TYPE_IGPU) ||
+                (target_backend && strcmp(target_backend, ggml_backend_dev_name(dev)) != 0)) {
+            continue;
+        }
+        ggml_backend_ptr backend(ggml_backend_dev_init(dev, nullptr));
+        if (!backend) {
+            throw std::runtime_error("failed to initialize Sinkhorn test backend");
+        }
+        double max_error = 0;
+        for (uint32_t iterations = 1; iterations <= 20; ++iterations) {
+            ggml_context_ptr ctx(ggml_init({2*1024*1024, nullptr, true}));
+            ggml_tensor * logits = ggml_new_tensor_2d(ctx.get(), GGML_TYPE_F32, 8, values.size());
+            ggml_tensor * mix[4];
+            for (int i = 0; i < 4; ++i) {
+                mix[i] = ggml_view_2d(ctx.get(), logits, 1, values.size(), logits->nb[1], (4 + i)*sizeof(float));
+            }
+            llama_model_sensenova_loop::graph::build_sinkhorn(ctx.get(), mix, iterations);
+            ggml_tensor * output = ggml_concat(ctx.get(), ggml_concat(ctx.get(), mix[0], mix[1], 0), ggml_concat(ctx.get(), mix[2], mix[3], 0), 0);
+            ggml_cgraph * graph = ggml_new_graph_custom(ctx.get(), 256, false);
+            ggml_build_forward_expand(graph, output);
+            ggml_backend_buffer_ptr buffer(ggml_backend_alloc_ctx_tensors(ctx.get(), backend.get()));
+            if (!buffer) {
+                throw std::runtime_error("failed to allocate Sinkhorn test tensors");
+            }
+            std::vector<float> data(8*values.size(), 0.0f);
+            for (size_t j = 0; j < values.size(); ++j) {
+                for (int i = 0; i < 4; ++i) {
+                    data[8*j + 4 + i] = values[j][i];
+                }
+            }
+            ggml_backend_tensor_set(logits, data.data(), 0, data.size()*sizeof(float));
+            if (ggml_backend_graph_compute(backend.get(), graph) != GGML_STATUS_SUCCESS) {
+                throw std::runtime_error("failed to evaluate Sinkhorn test graph");
+            }
+            std::vector<float> actual(4*values.size());
+            ggml_backend_tensor_get(output, actual.data(), 0, actual.size()*sizeof(float));
+            for (size_t j = 0; j < values.size(); ++j) {
+                std::array<double, 4> expected = {values[j][0], values[j][1], values[j][2], values[j][3]};
+                auto normalize = [&](int a, int b) {
+                    const double largest = std::max(expected[a], expected[b]);
+                    const double sum = largest + std::log(std::exp(expected[a] - largest) + std::exp(expected[b] - largest));
+                    expected[a] -= sum;
+                    expected[b] -= sum;
+                };
+                for (uint32_t i = 0; i < iterations; ++i) {
+                    normalize(0, 1);
+                    normalize(2, 3);
+                    normalize(0, 2);
+                    normalize(1, 3);
+                }
+                for (int i = 0; i < 4; ++i) {
+                    const double error = std::abs(actual[4*j + i] - std::exp(expected[i]));
+                    if (!std::isfinite(actual[4*j + i]) || error > 2e-5) {
+                        throw std::runtime_error("SenseNova Loop Sinkhorn differs from its finite-iteration reference");
+                    }
+                    max_error = std::max(max_error, error);
+                }
+            }
+        }
+        LOG_INF("%s: %s: finite iterations 1-20 passed, max error %.3g\n", __func__, ggml_backend_dev_name(dev), max_error);
+    }
+}
+
+static void check_loop_mtp(const size_t seed, const float stdev) {
+    const llm_arch arch = LLM_ARCH_SENSENOVA_LOOP;
+    gguf_context_ptr metadata = get_gguf_ctx(arch, false);
+    gguf_set_val_u32(metadata.get(), llama_arch_kv_name(arch, LLM_KV_BLOCK_COUNT).c_str(), 7);
+    gguf_set_val_u32(metadata.get(), llama_arch_kv_name(arch, LLM_KV_NEXTN_PREDICT_LAYERS).c_str(), 1);
+    const uint32_t recurrent[] = {1, 0, 1, 0, 1, 0, 0};
+    gguf_set_arr_data(metadata.get(), llama_arch_kv_name(arch, LLM_KV_ATTENTION_RECURRENT_LAYERS).c_str(), GGUF_TYPE_UINT32, recurrent, 7);
+    llama_model_ptr model = get_model(metadata.get(), nullptr, seed, stdev, {}, LLAMA_SPLIT_MODE_LAYER, nullptr, true);
+    llama_context_params params = llama_context_default_params();
+    params.ctx_type = LLAMA_CONTEXT_TYPE_MTP;
+    params.n_ctx = 64;
+    params.n_batch = 4;
+    params.n_ubatch = 2;
+    params.n_threads = 2;
+    params.n_threads_batch = 2;
+    llama_context_ptr ctx(llama_init_from_model(model.get(), params));
+    if (!ctx) {
+        throw std::runtime_error("failed to create SenseNova Loop MTP context");
+    }
+    const int32_t n_embd = llama_model_n_embd(model.get());
+    const int32_t n_vocab = llama_vocab_n_tokens(llama_model_get_vocab(model.get()));
+    std::vector<float> hidden(4*n_embd, 0.1f);
+    std::vector<float> expected;
+    for (int32_t chunk : {4, 2}) {
+        llama_memory_clear(llama_get_memory(ctx.get()), true);
+        std::vector<float> logits;
+        for (int32_t start = 0; start < 4; start += chunk) {
+            common_batch batch(ctx.get());
+            for (int32_t i = start; i < start + chunk; ++i) {
+                const int32_t idx = batch.add(i, i, 0, true);
+                GGML_ASSERT(batch.set_embd_state(idx, {hidden.data() + i*n_embd, 1, (size_t) n_embd}));
+            }
+            if (llama_process(ctx.get(), LLAMA_PROCESS_TYPE_DECODE, batch.get())) {
+                throw std::runtime_error("failed to decode SenseNova Loop MTP batch");
+            }
+            for (int32_t i = 0; i < chunk; ++i) {
+                const float * row = llama_get_logits_ith(ctx.get(), i);
+                logits.insert(logits.end(), row, row + n_vocab);
+            }
+        }
+        if (expected.empty()) {
+            expected = std::move(logits);
+        } else if (!(nmse(expected, logits) <= 1e-4)) {
+            throw std::runtime_error("SenseNova Loop MTP chunked decode differs from a full batch");
+        }
+    }
 }
 
 // entries [n/4, n/2) are embd rows, decoded either as token/embd/token chunks or as one mixed batch
@@ -1410,6 +1559,22 @@ static int test_backends(const std::string & arch_filter, const size_t seed, con
         }
 
         const bool encode = arch == LLM_ARCH_T5 || arch == LLM_ARCH_DREAM || arch == LLM_ARCH_LLADA || arch == LLM_ARCH_LLADA_MOE || arch == LLM_ARCH_RND1;
+        if (arch == LLM_ARCH_SENSENOVA_LOOP) {
+            check_loop_sinkhorn(seed, target_backend);
+            check_loop_mtp(seed, stdev);
+            gguf_context_ptr invalid = get_gguf_ctx(arch, false);
+            GGML_ASSERT(gguf_remove_key(invalid.get(), llama_arch_kv_name(arch, LLM_KV_ATTENTION_RECURRENT_LAYERS).c_str()) >= 0);
+            gguf_set_val_u32(invalid.get(), llama_arch_kv_name(arch, LLM_KV_FULL_ATTENTION_INTERVAL).c_str(), 0);
+            llama_model_params params = llama_model_default_params();
+            params.n_gpu_layers = 0;
+            tensor_data_params tensor_params = { seed, stdev };
+            ud.verbosity = LOG_LEVEL_OUTPUT;
+            llama_model_ptr rejected(llama_model_init_from_user(invalid.get(), set_tensor_data, &tensor_params, params));
+            ud.verbosity = verbosity;
+            if (rejected) {
+                throw std::runtime_error("SenseNova Loop accepted missing recurrent layers");
+            }
+        }
         for (bool moe : {false, true}) {
             if (moe && !moe_implemented(arch)) {
                 continue;
