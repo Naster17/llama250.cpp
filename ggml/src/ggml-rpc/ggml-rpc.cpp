@@ -1,5 +1,6 @@
 #include "ggml-rpc.h"
 #include "ggml-impl.h"
+#include "ggml-quants.h"
 #include "ggml-backend-impl.h"
 #include "ggml-cpp.h"
 #include "transport.h"
@@ -879,6 +880,19 @@ static bool rpc_wire_bf16_eligible(const ggml_tensor * tensor, size_t offset, si
            size >= 65536 && size % 4 == 0 && offset % 4 == 0;
 }
 
+// experimental: send F32 activations as Q8_0 (~3.8x smaller than F32, ~1.9x smaller than BF16).
+// client opts in with GGML_RPC_WIRE_Q8_0=1; takes precedence over BF16 when both are set.
+static bool rpc_wire_q8_0_enabled() {
+    static const bool enabled = getenv("GGML_RPC_WIRE_Q8_0") != nullptr;
+    return enabled;
+}
+
+static bool rpc_wire_q8_0_eligible(const ggml_tensor * tensor, size_t offset, size_t size) {
+    return rpc_wire_q8_0_enabled() && tensor->type == GGML_TYPE_F32 &&
+           tensor->buffer->usage != GGML_BACKEND_BUFFER_USAGE_WEIGHTS &&
+           size >= 65536 && size % 128 == 0 && offset % 128 == 0;
+}
+
 static void ggml_backend_rpc_buffer_set_tensor(ggml_backend_buffer_t buffer, ggml_tensor * tensor, const void * data, size_t offset, size_t size) {
     ggml_backend_rpc_buffer_context * ctx = (ggml_backend_rpc_buffer_context *)buffer->context;
     rpc_tensor rpc_tensor = serialize_tensor(tensor);
@@ -900,6 +914,15 @@ static void ggml_backend_rpc_buffer_set_tensor(ggml_backend_buffer_t buffer, ggm
         }
         // the server has no cache entry for this tensor - ask it to save one
         cache_flag = 1;
+    }
+    if (rpc_wire_q8_0_eligible(tensor, offset, size)) {
+        const size_t n_blocks = size / 128;
+        std::vector<block_q8_0> wire(n_blocks);
+        quantize_row_q8_0_ref((const float *) data, wire.data(), (int64_t) (size / 4));
+        size_t header_size;
+        auto header = serialize_set_tensor(rpc_tensor, cache_flag | 4, offset, nullptr, 0, header_size);
+        ctx->dispatcher->send(RPC_CMD_SET_TENSOR, header, header_size, wire.data(), n_blocks * sizeof(block_q8_0), nullptr, 0);
+        return;
     }
     if (rpc_wire_bf16_eligible(tensor, offset, size)) {
         std::vector<ggml_bf16_t> wire(size / 4);
@@ -1798,7 +1821,9 @@ bool rpc_server::set_tensor(socket_ptr sock, uint64_t input_size) {
     memcpy(&cache_flag, header + sizeof(rpc_tensor), sizeof(cache_flag));
     memcpy(&offset,     header + sizeof(rpc_tensor) + sizeof(cache_flag), sizeof(offset));
     const bool wire_bf16 = (cache_flag & 2) != 0;
-    const size_t size = (input_size - header_size) * (wire_bf16 ? 2 : 1);
+    const bool wire_q8_0 = (cache_flag & 4) != 0;
+    const size_t size = wire_q8_0 ? (input_size - header_size) / 34 * 128
+                                  : (input_size - header_size) * (wire_bf16 ? 2 : 1);
 
     struct ggml_init_params params {
         /*.mem_size   =*/ ggml_tensor_overhead(),
@@ -1849,6 +1874,27 @@ bool rpc_server::set_tensor(socket_ptr sock, uint64_t input_size) {
 
     // a buffer of the tensor size would be allocated and page faulted for every tensor, which is slow
     const size_t chunk_size = 16*1024*1024;
+    if (wire_q8_0) {
+        const size_t wire_size = size / 128 * 34;
+        const size_t chunk_wire = (chunk_size / 34) * 34;
+        if (set_tensor_buf.size() < std::min(wire_size, chunk_wire)) {
+            set_tensor_buf.resize(std::min(wire_size, chunk_wire));
+        }
+        if (set_tensor_f32_buf.size() < std::min(size, chunk_size)) {
+            set_tensor_f32_buf.resize(std::min(size, chunk_size));
+        }
+        for (size_t done = 0; done < wire_size; ) {
+            const size_t n = std::min(wire_size - done, chunk_wire);
+            if (!sock->recv_data(set_tensor_buf.data(), n)) {
+                return false;
+            }
+            const size_t n_floats = n / 34 * 32;
+            dequantize_row_q8_0((const block_q8_0 *) set_tensor_buf.data(), (float *) set_tensor_f32_buf.data(), (int64_t) n_floats);
+            ggml_backend_tensor_set(tensor, set_tensor_f32_buf.data(), offset + done / 34 * 128, n_floats * 4);
+            done += n;
+        }
+        return true;
+    }
     if (wire_bf16) {
         const size_t wire_size = size / 2;
         if (set_tensor_buf.size() < std::min(wire_size, chunk_size / 2)) {
