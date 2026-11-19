@@ -29,6 +29,7 @@ refines 0004 (gate the pre-split to RPC backends only).
 | 0012 | `0012-rpc-optional-Q8_0-activation-wire-GGML_RPC_WIRE_Q8_0.patch` | `ggml/src/ggml-rpc/ggml-rpc.cpp` | Opt-in Q8_0 activation wire (`GGML_RPC_WIRE_Q8_0=1`): quantize F32 split-boundary activations to Q8_0 (~3.8x smaller than F32, ~1.9x vs BF16) to cut pp wire traffic on slow RPC links. Block-aligned chunked transfer; server dequantizes unconditionally. |
 | 0013 | `0013-vulkan-IQ3_XXS-dequant-sign-via-conditional-negation.patch` | `vulkan-shaders/dequant_funcs.glsl` | IQ3_XXS pp dequant: sign via conditional negation (free RDNA2 source modifier) instead of multiply by ±1. Ripple-65B pp512 57.6->60.9 t/s on 2xBC-250 RPC; tg unchanged (matvec already optimal). 2604/2604 backend ops OK. |
 | 0014 | `0014-vulkan-env-gated-FA-staging-extensions-for-BC-250-GG.patch` | `ggml-vulkan.cpp` | Env-gated BC-250 FA staging extensions (`GGML_VK_FA_STAGING_EXT` bitmask: 1=prefill rows, 2=shallow KV, 4=head dims <=256 other than 128/256). Default off. A/B on q8_0/f16 KV: no gain, prefill staging -1..-10% pp@d4096; knob kept for i-quant KV experiments. FLASH_ATTN_EXT suite OK with EXT=7. |
+| 0015 | `0015-vulkan-BC-250-MoE-ID-tile-tuning-GGML_VK_BC250_MMID_.patch` | `ggml-vulkan.cpp` | BC-250 MoE ID tile tuning (`GGML_VK_BC250_MMID_TUNE` bitmask: 1=per-expert tile fit + large ID availability, 2=WG-256 ID warptile). ID tiles are per-expert: select by avg routed rows/expert, skip the dense occupancy downgrade. gemma4 ub512 pp +7.6%/+6.5% (ID ops 5150->6000 GFLOPS); Qwen3.5-35B RPC neutral; tg unchanged. Default off; launcher sets 1. MUL_MAT_ID suite OK. |
 
 ## Apply (to a clean upstream checkout)
 
@@ -66,6 +67,7 @@ Use stock Mesa (int dot OFF). See `Naster17/bc250-mesa`
 - 0012: Q8_0 wire functional on gemma4-26B-A4B RPC (pp512 ~677, tg ~47.8); gemma4 pp is compute-bound so wire compression shows no speedup there (it targets wire-bound large-hidden models). Block-aligned transfer verified.
 - 0013: `test-backend-ops -o MUL_MAT,MUL_MAT_VEC` 2604/2604 OK on Vulkan0; Ripple-65B pp512 57.6->60.9 t/s (+6%) on 2xBC-250 RPC, tg unchanged (matvec already optimal).
 - 0014: `test-backend-ops -o FLASH_ATTN_EXT` with `GGML_VK_FA_STAGING_EXT=7 GGML_VK_FA_QUANT_STAGING=1` OK on Vulkan0; A/B logs in `bench-results/bc250-20261119/` (LFM3/gemma4: neutral-to-negative on q8_0 KV, default unchanged).
+- 0015: `test-backend-ops -o MUL_MAT_ID` with TUNE=1 and TUNE=3 OK on Vulkan0; gemma4 pp512 932->1003, pp2048 859->915 (ub512); Qwen3.5-35B-A3B RPC neutral; logs in bench-results/bc250-20261119/.
 
 ## Release v1.1.0
 

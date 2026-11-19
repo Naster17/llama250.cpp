@@ -68,6 +68,7 @@ Notes:
 |-----|--------|
 | `GGML_VK_FA_QUANT_STAGING=1` | FA LDS staging for quantized K/V (patch 0003). Correct, ~neutral at tested depths; may help at very long ctx. Off by default. |
 | `GGML_VK_FA_STAGING_EXT=N` | BC-250 FA staging extensions (patch 0014), bitmask: 1=prefill rows, 2=shallow KV (<4096), 4=head dims <=256 other than 128/256. Off by default; A/B on q8_0/f16 KV showed no gain (prefill staging slightly negative). For i-quant KV experiments. |
+| `GGML_VK_BC250_MMID_TUNE=N` | MoE MUL_MAT_ID tile tuning (patch 0015): 1=per-expert tile fit (+7.6% MoE pp at ub512 on gemma4), 2=WG-256 large ID warptile variant. Off by default in code; llama250.sh sets 1. MoE pp also favors `-ub 1024`; avoid 2048 (device-lost on gemma4). |
 
 ## 6. Benchmark
 

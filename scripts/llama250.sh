@@ -15,10 +15,12 @@
 #   KVU=1                unified KV (prompt caching); set 0 for separate SWA cache
 #   FA=on                flash attention
 #   CTK=q8_0 CTV=q8_0    KV cache quant (q8_0 safe; q4_0 halves KV bandwidth)
-#   UB=1024 B=4096       ubatch / batch
+#   UB=1024 B=4096       ubatch / batch (MoE pp favors 1024; avoid 2048: device-lost)
 #   LM=dio               load mode (dio: 2x faster load, +1-6% pp measured on BC-250;
 #                        mmap/auto/none/mlock also valid; use mmap on tmpfs/network FS)
 #   CACHE=1              prompt caching + checkpoints (set 0 to disable)
+#   MMID_TUNE=1          MoE ID tile tuning, per-expert fit (+7.6% MoE pp at ub512
+#                        on gemma4, neutral elsewhere; 0 disables)
 #   EXTRA_ARGS           appended verbatim
 #
 # Notes:
@@ -44,6 +46,7 @@ B="${B:-4096}"
 KVU="${KVU:-1}"
 CACHE="${CACHE:-1}"
 LM="${LM:-dio}"
+export GGML_VK_BC250_MMID_TUNE="${MMID_TUNE:-1}"
 
 args=( -m "$MODEL" --host 0.0.0.0 --port "$PORT"
        -ngl "$NGL" -t "$THREADS" -tb "$THREADS"
