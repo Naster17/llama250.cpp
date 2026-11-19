@@ -60,3 +60,16 @@ processing. Use the patched `libvulkan_radeon.so` via `VK_ICD_FILENAMES`.
 - 0004: flint ctx 200k over RPC loads/listens (RPC0 compute ~534 MiB).
 - 0007-0010: `test-backend-ops -o MHC_ROUTE,MHC_MERGE` 18/18 OK on Vulkan0; SenseNova-Loop-9B-Q8_0 loads and generates coherent text, pp512 382 / tg128 21.7.
 - 0011: qwen3vl pp512 669->682 (local), qwen3.5-2b tg128 unchanged (~85); RPC pre-split still triggers when an RPC backend is present.
+- 0012: Q8_0 wire functional on gemma4-26B-A4B RPC (pp512 ~677, tg ~47.8); gemma4 pp is compute-bound so wire compression shows no speedup there (it targets wire-bound large-hidden models). Block-aligned transfer verified.
+- 0013: `test-backend-ops -o MUL_MAT,MUL_MAT_VEC` 2604/2604 OK on Vulkan0; Ripple-65B pp512 57.6->60.9 t/s (+6%) on 2xBC-250 RPC, tg unchanged (matvec already optimal).
+
+## Release v1.1.0
+
+On top of v1.0.0 (upstream merged to `f8caa5ea3`):
+
+- **SenseNova-Loop fused mHC** (0007-0010): single-node `MHC_ROUTE`/`MHC_MERGE` ggml ops + Vulkan kernels replace ~100 tiny dispatches per router. SenseNova-Loop-9B-Q8_0 on one BC-250: pp512 45->382 (8.5x), tg128 7.4->21.7 (2.9x).
+- **RPC pre-split gate** (0011): pre-split only for RPC backends; recovers local qwen3vl pp.
+- **Q8_0 activation wire** (0012): opt-in `GGML_RPC_WIRE_Q8_0=1`, ~3.8x smaller boundary activations than F32 for wire-bound RPC pp.
+- **IQ3_XXS dequant** (0013): sign via conditional negation; Ripple-65B pp +6%.
+
+Notes: Ripple-65B (ricursive) measures via `llama-server` + HTTP, not `llama-bench` (bench requests a 1 GB contiguous RPC buffer that RADV cannot allocate on the 512 MB VRAM carveout; server splits buffers smaller). Vulkan FA already works for ricursive (dense-mask fallback); the kv_rows cell-list optimization is unsupported but gives ~0 gain for this model. Ripple pp is compute-bound on the gfx1013 scalar FP16 path (no WMMA/int-dot); GEMM tiles already tuned (0001), `-ub 512` gives +3% pp over 256.
