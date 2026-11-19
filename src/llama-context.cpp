@@ -3080,8 +3080,20 @@ ggml_cgraph * llama_context::graph_reserve(
 
     // Pre-split before reserve: reserve's internal single split over-allocates the
     // compute buffer on RPC backends (OOM at large ctx); pre-splitting avoids it.
+    // Local-only graphs split better lazily, so only pre-split when an RPC backend is present.
     if (!split_only && gf) {
-        ggml_backend_sched_split_graph(sched.get(), gf);
+        bool has_rpc = false;
+        const int n_backends = ggml_backend_sched_get_n_backends(sched.get());
+        for (int i = 0; i < n_backends; ++i) {
+            const char * name = ggml_backend_name(ggml_backend_sched_get_backend(sched.get(), i));
+            if (name && strncmp(name, "RPC", 3) == 0) {
+                has_rpc = true;
+                break;
+            }
+        }
+        if (has_rpc) {
+            ggml_backend_sched_split_graph(sched.get(), gf);
+        }
     }
     // initialize scheduler with the specified graph
     if (split_only) {
