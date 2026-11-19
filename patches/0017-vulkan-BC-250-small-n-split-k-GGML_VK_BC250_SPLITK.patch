@@ -1,0 +1,33 @@
+From a6c07dbcc293772190701707310ac92d79920c07 Mon Sep 17 00:00:00 2001
+From: Naster17 <naster17.dev@gmail.com>
+Date: Thu, 19 Nov 2026 23:42:36 +0100
+Subject: [PATCH 17/18] vulkan : BC-250 small-n split-k (GGML_VK_BC250_SPLITK)
+
+gfx1013 is RDNA1-class: the RDNA3/4 small-n split-k clauses never fired.
+Env-gated inclusion in the rdna clause. LFM3 pp16 728->954 (+31%), pp32 1490->1893
+(+27%); qwen3.5-2b pp16 +8.5%; pp64/512 unchanged. MUL_MAT suite OK on Vulkan0.
+Targets speculative-verify batches and small-ubatch prefill. Default off.
+
+Assisted-by: Qwen3.8-Max
+---
+ ggml/src/ggml-vulkan/ggml-vulkan.cpp | 4 +++-
+ 1 file changed, 3 insertions(+), 1 deletion(-)
+
+diff --git a/ggml/src/ggml-vulkan/ggml-vulkan.cpp b/ggml/src/ggml-vulkan/ggml-vulkan.cpp
+index c47d1b82a..3666f5ebe 100644
+--- a/ggml/src/ggml-vulkan/ggml-vulkan.cpp
++++ b/ggml/src/ggml-vulkan/ggml-vulkan.cpp
+@@ -6519,7 +6519,9 @@ static uint32_t ggml_vk_guess_split_k(ggml_backend_vk_context * ctx, uint32_t m,
+         return 1;
+     }
+ 
+-    const bool rdna = ctx->device->architecture == AMD_RDNA3 || ctx->device->architecture == AMD_RDNA4;
++    // BC-250 is RDNA1-class with the same small-n latency problem (env-gated)
++    const bool bc250_splitk = ggml_vk_is_bc250_scalar(ctx->device) && getenv("GGML_VK_BC250_SPLITK") != nullptr;
++    const bool rdna = ctx->device->architecture == AMD_RDNA3 || ctx->device->architecture == AMD_RDNA4 || bc250_splitk;
+     uint32_t split_k = narrow_n && ctx->device->shader_core_count == 0 ? 8u : 1u;
+     if ((narrow_n || rdna) && ctx->device->shader_core_count != 0 && k >= 2048 && n <= 32) {
+         // Small n gives too few workgroups to hide latency, aim for 8 per CU.
+-- 
+2.56.1
+

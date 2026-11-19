@@ -30,6 +30,9 @@ refines 0004 (gate the pre-split to RPC backends only).
 | 0013 | `0013-vulkan-IQ3_XXS-dequant-sign-via-conditional-negation.patch` | `vulkan-shaders/dequant_funcs.glsl` | IQ3_XXS pp dequant: sign via conditional negation (free RDNA2 source modifier) instead of multiply by ±1. Ripple-65B pp512 57.6->60.9 t/s on 2xBC-250 RPC; tg unchanged (matvec already optimal). 2604/2604 backend ops OK. |
 | 0014 | `0014-vulkan-env-gated-FA-staging-extensions-for-BC-250-GG.patch` | `ggml-vulkan.cpp` | Env-gated BC-250 FA staging extensions (`GGML_VK_FA_STAGING_EXT` bitmask: 1=prefill rows, 2=shallow KV, 4=head dims <=256 other than 128/256). Default off. A/B on q8_0/f16 KV: no gain, prefill staging -1..-10% pp@d4096; knob kept for i-quant KV experiments. FLASH_ATTN_EXT suite OK with EXT=7. |
 | 0015 | `0015-vulkan-BC-250-MoE-ID-tile-tuning-GGML_VK_BC250_MMID_.patch` | `ggml-vulkan.cpp` | BC-250 MoE ID tile tuning (`GGML_VK_BC250_MMID_TUNE` bitmask: 1=per-expert tile fit + large ID availability, 2=WG-256 ID warptile). ID tiles are per-expert: select by avg routed rows/expert, skip the dense occupancy downgrade. gemma4 ub512 pp +7.6%/+6.5% (ID ops 5150->6000 GFLOPS); Qwen3.5-35B RPC neutral; tg unchanged. Default off; launcher sets 1. MUL_MAT_ID suite OK. |
+| 0016 | `0016-vulkan-IQ2-IQ3_S-dequant-sign-via-conditional-negati.patch` | `vulkan-shaders/dequant_funcs.glsl` | Extend 0013 sign trick to IQ2_XXS/IQ2_XS/IQ2_S/IQ3_S (all 8 remaining +/-1 multiply sites). MUL_MAT,MUL_MAT_VEC 2604/2604 OK on Vulkan0. End-to-end pp check pending an on-disk IQ2_S/IQ3_S model. |
+| 0017 | `0017-vulkan-BC-250-small-n-split-k-GGML_VK_BC250_SPLITK.patch` | `ggml-vulkan.cpp` | Env-gated small-n split-k for gfx1013 (RDNA1-class missed the RDNA3/4 clauses). LFM3 pp16 +31%, pp32 +27%; qwen3.5-2b pp16 +8.5%; large pp unchanged. MUL_MAT suite OK. Default off. |
+| 0018 | `0018-rpc-async-cross-backend-copies-async-path-wire-compr.patch` | `ggml-rpc.cpp` | `GGML_RPC_ASYNC_COPY=1`: cpy_tensor_async (host<->RPC queued; cross-server GET->SET chained via wait_before future), Q8_0/BF16 compression on set_tensor_async, BF16 cross-server copies. No proto change. test-rpc-multi-server OK; greedy identity OK; perf NEUTRAL on 1GbE (wire/RTT-bound, not copy-sync-bound). Default off. |
 
 ## Apply (to a clean upstream checkout)
 
@@ -68,6 +71,9 @@ Use stock Mesa (int dot OFF). See `Naster17/bc250-mesa`
 - 0013: `test-backend-ops -o MUL_MAT,MUL_MAT_VEC` 2604/2604 OK on Vulkan0; Ripple-65B pp512 57.6->60.9 t/s (+6%) on 2xBC-250 RPC, tg unchanged (matvec already optimal).
 - 0014: `test-backend-ops -o FLASH_ATTN_EXT` with `GGML_VK_FA_STAGING_EXT=7 GGML_VK_FA_QUANT_STAGING=1` OK on Vulkan0; A/B logs in `bench-results/bc250-20261119/` (LFM3/gemma4: neutral-to-negative on q8_0 KV, default unchanged).
 - 0015: `test-backend-ops -o MUL_MAT_ID` with TUNE=1 and TUNE=3 OK on Vulkan0; gemma4 pp512 932->1003, pp2048 859->915 (ub512); Qwen3.5-35B-A3B RPC neutral; logs in bench-results/bc250-20261119/.
+- 0016: `test-backend-ops -o MUL_MAT,MUL_MAT_VEC` 2604/2604 OK on Vulkan0.
+- 0017: `test-backend-ops -o MUL_MAT` with GGML_VK_BC250_SPLITK=1 OK; LFM3 pp16 728->954, pp32 1490->1893; qwen3.5-2b-f16 pp16 285->310.
+- 0018: `tests/test-rpc-multi-server.sh` with GGML_RPC_ASYNC_COPY=1 + GGML_RPC_WIRE_BF16=1 OK; 2-board LFM3 greedy output identical base vs async; gemma4 cluster pp/tg neutral (logs in bench-results/bc250-20261119/).
 
 ## Release v1.1.0
 

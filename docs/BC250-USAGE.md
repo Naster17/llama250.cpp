@@ -69,6 +69,8 @@ Notes:
 | `GGML_VK_FA_QUANT_STAGING=1` | FA LDS staging for quantized K/V (patch 0003). Correct, ~neutral at tested depths; may help at very long ctx. Off by default. |
 | `GGML_VK_FA_STAGING_EXT=N` | BC-250 FA staging extensions (patch 0014), bitmask: 1=prefill rows, 2=shallow KV (<4096), 4=head dims <=256 other than 128/256. Off by default; A/B on q8_0/f16 KV showed no gain (prefill staging slightly negative). For i-quant KV experiments. |
 | `GGML_VK_BC250_MMID_TUNE=N` | MoE MUL_MAT_ID tile tuning (patch 0015): 1=per-expert tile fit (+7.6% MoE pp at ub512 on gemma4), 2=WG-256 large ID warptile variant. Off by default in code; llama250.sh sets 1. MoE pp also favors `-ub 1024`; avoid 2048 (device-lost on gemma4). |
+| `GGML_VK_BC250_SPLITK=1` | Small-n split-k for gfx1013 (patch 0017): +27-31% on pp16/pp32 (spec-verify and small-batch shapes), large pp unchanged. Off by default. |
+| `GGML_RPC_ASYNC_COPY=1` | Async RPC cross-backend copies + async-path wire compression (patch 0018). Correct (protocol + greedy identity verified); perf neutral on 1GbE - for faster interconnects. Off by default. |
 
 ## 6. Benchmark
 
