@@ -381,8 +381,8 @@ vec2 dequantize(uint ib, uint iqs, uint a_offset) {
     bool sign0 = (sign & 1) != 0;
     bool sign1 = (sign & 2) != 0;
     return db * vec2(
-        grid.x * (sign0 ? -1.0 : 1.0),
-        grid.y * (sign1 ? -1.0 : 1.0)
+        sign0 ? -float(grid.x) : float(grid.x),
+        sign1 ? -float(grid.y) : float(grid.y)
     );
 }
 vec4 dequantize4(uint ib, uint iqs, uint a_offset) {
@@ -403,10 +403,10 @@ vec4 dequantize4(uint ib, uint iqs, uint a_offset) {
     bool sign2 = (sign & 4) != 0;
     bool sign3 = (sign & 8) != 0;
     return db * vec4(
-        grid.x * (sign0 ? -1.0 : 1.0),
-        grid.y * (sign1 ? -1.0 : 1.0),
-        grid.z * (sign2 ? -1.0 : 1.0),
-        grid.w * (sign3 ? -1.0 : 1.0)
+        sign0 ? -float(grid.x) : float(grid.x),
+        sign1 ? -float(grid.y) : float(grid.y),
+        sign2 ? -float(grid.z) : float(grid.z),
+        sign3 ? -float(grid.w) : float(grid.w)
     );
 }
 #endif
