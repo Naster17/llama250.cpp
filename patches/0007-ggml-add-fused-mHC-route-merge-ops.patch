@@ -1,0 +1,354 @@
+From 67ac8b9cf9302c51dc9c5824c888bb454c1e0f48 Mon Sep 17 00:00:00 2001
+From: Naster17 <naster17.dev@gmail.com>
+Date: Thu, 19 Nov 2026 15:21:05 +0100
+Subject: [PATCH 07/11] ggml : add fused mHC route/merge ops
+
+Single-node mHC router (gates + 20-pass Sinkhorn + pre-weighted branch) and stream merge for SenseNova Loop, with CPU reference. Bump RPC proto patch version for the two new ops.
+
+Assisted-by: Qwen3.8-Max
+---
+ ggml/include/ggml-rpc.h      |   4 +-
+ ggml/include/ggml.h          |  18 +++++
+ ggml/src/ggml-cpu/ggml-cpu.c |  10 +++
+ ggml/src/ggml-cpu/ops.cpp    | 128 +++++++++++++++++++++++++++++++++++
+ ggml/src/ggml-cpu/ops.h      |   2 +
+ ggml/src/ggml.c              |  72 +++++++++++++++++++-
+ 6 files changed, 230 insertions(+), 4 deletions(-)
+
+diff --git a/ggml/include/ggml-rpc.h b/ggml/include/ggml-rpc.h
+index da1d4e1f1..de17900dc 100644
+--- a/ggml/include/ggml-rpc.h
++++ b/ggml/include/ggml-rpc.h
+@@ -8,10 +8,10 @@ extern "C" {
+ 
+ #define RPC_PROTO_MAJOR_VERSION    10
+ #define RPC_PROTO_MINOR_VERSION    0
+-#define RPC_PROTO_PATCH_VERSION    0
++#define RPC_PROTO_PATCH_VERSION    1
+ 
+ #ifdef  __cplusplus
+-static_assert(GGML_OP_COUNT == 99, "GGML_OP_COUNT has changed - update RPC_PROTO_PATCH_VERSION");
++static_assert(GGML_OP_COUNT == 101, "GGML_OP_COUNT has changed - update RPC_PROTO_PATCH_VERSION");
+ #endif
+ 
+ #define GGML_RPC_MAX_SERVERS       16
+diff --git a/ggml/include/ggml.h b/ggml/include/ggml.h
+index 2341fa6c1..befb59d9c 100644
+--- a/ggml/include/ggml.h
++++ b/ggml/include/ggml.h
+@@ -429,6 +429,9 @@ extern "C" {
+ 
+         GGML_OP_GLU,
+ 
++        GGML_OP_MHC_ROUTE,
++        GGML_OP_MHC_MERGE,
++
+         GGML_OP_COUNT,
+     };
+ 
+@@ -2297,6 +2300,21 @@ extern "C" {
+             struct ggml_tensor  * sx,
+             struct ggml_tensor  * c);
+ 
++    // fused mHC residual-stream routing (SenseNova Loop): route packs branch+gates, merge mixes back
++    GGML_API struct ggml_tensor * ggml_mhc_route(
++            struct ggml_context * ctx,
++            struct ggml_tensor  * a,
++            struct ggml_tensor  * b,
++            struct ggml_tensor  * w,
++            struct ggml_tensor  * bias);
++
++    GGML_API struct ggml_tensor * ggml_mhc_merge(
++            struct ggml_context * ctx,
++            struct ggml_tensor  * a,
++            struct ggml_tensor  * b,
++            struct ggml_tensor  * x,
++            struct ggml_tensor  * packed);
++
+     GGML_API struct ggml_tensor * ggml_ssm_scan(
+             struct ggml_context * ctx,
+             struct ggml_tensor  * s,
+diff --git a/ggml/src/ggml-cpu/ggml-cpu.c b/ggml/src/ggml-cpu/ggml-cpu.c
+index 30edcdbac..13c2345f7 100644
+--- a/ggml/src/ggml-cpu/ggml-cpu.c
++++ b/ggml/src/ggml-cpu/ggml-cpu.c
+@@ -2097,6 +2097,14 @@ static void ggml_compute_forward(struct ggml_compute_params * params, struct ggm
+             {
+                 ggml_compute_forward_gated_delta_net(params, tensor);
+             } break;
++        case GGML_OP_MHC_ROUTE:
++            {
++                ggml_compute_forward_mhc_route(params, tensor);
++            } break;
++        case GGML_OP_MHC_MERGE:
++            {
++                ggml_compute_forward_mhc_merge(params, tensor);
++            } break;
+         case GGML_OP_LIGHTNING_INDEXER:
+             {
+                 ggml_compute_forward_lightning_indexer(params, tensor);
+@@ -2438,6 +2446,8 @@ static int ggml_get_n_tasks(struct ggml_tensor * node, int n_threads) {
+         case GGML_OP_SSM_CONV:
+         case GGML_OP_SSM_SCAN:
+         case GGML_OP_LIGHTNING_INDEXER:
++        case GGML_OP_MHC_ROUTE:
++        case GGML_OP_MHC_MERGE:
+             {
+                 n_tasks = n_threads;
+             } break;
+diff --git a/ggml/src/ggml-cpu/ops.cpp b/ggml/src/ggml-cpu/ops.cpp
+index 72efbc6e9..7d7361352 100644
+--- a/ggml/src/ggml-cpu/ops.cpp
++++ b/ggml/src/ggml-cpu/ops.cpp
+@@ -12401,6 +12401,134 @@ void ggml_compute_forward_fwht(const ggml_compute_params * params, ggml_tensor *
+     }
+ }
+ 
++// ggml_compute_forward_mhc_route
++
++void ggml_compute_forward_mhc_route(const struct ggml_compute_params * params, struct ggml_tensor * dst) {
++    const struct ggml_tensor * a    = dst->src[0];
++    const struct ggml_tensor * b    = dst->src[1];
++    const struct ggml_tensor * w    = dst->src[2];
++    const struct ggml_tensor * bias = dst->src[3];
++
++    GGML_ASSERT(a->type == GGML_TYPE_F32 && b->type == GGML_TYPE_F32);
++    GGML_ASSERT(w->type == GGML_TYPE_F32 && bias->type == GGML_TYPE_F32);
++    GGML_ASSERT(ggml_is_contiguous(w) && ggml_is_contiguous(bias));
++    GGML_ASSERT(ggml_is_contiguous(dst));
++    GGML_ASSERT(a->nb[0] == sizeof(float) && b->nb[0] == sizeof(float));
++
++    const int64_t d     = a->ne[0];
++    const int64_t n_tok = a->ne[1];
++    const int64_t n_str = a->ne[2];
++
++    GGML_ASSERT(b->ne[0] == d && b->ne[1] == n_tok && b->ne[2] == n_str);
++    GGML_ASSERT(w->ne[0] == 2*d && w->ne[1] == 8);
++
++    const float * pw    = (const float *) w->data;
++    const float * pbias = (const float *) bias->data;
++    float       * out   = (float *) dst->data;
++
++    const int sink_iters = 20;
++
++    for (int64_t s = 0; s < n_str; ++s) {
++        for (int64_t t = params->ith; t < n_tok; t += params->nth) {
++            const float * va = (const float *) ((const char *) a->data + t*a->nb[1] + s*a->nb[2]);
++            const float * vb = (const float *) ((const char *) b->data + t*b->nb[1] + s*b->nb[2]);
++            float       * po = out + t*(d + 6) + s*n_tok*(d + 6);
++
++            float ss = 0.0f;
++            for (int64_t i = 0; i < d; ++i) {
++                ss += va[i]*va[i] + vb[i]*vb[i];
++            }
++            const float rms = 1.0f/sqrtf(ss/(2.0f*d) + 1e-6f);
++
++            float lg[8];
++            for (int k = 0; k < 8; ++k) {
++                const float * wk = pw + k*2*d;
++                float acc = 0.0f;
++                for (int64_t i = 0; i < d; ++i) {
++                    acc += wk[i]*va[i] + wk[d + i]*vb[i];
++                }
++                lg[k] = acc*rms + pbias[k];
++            }
++
++            const float pre0  = 1.0f/(1.0f + expf(-lg[0]));
++            const float pre1  = 1.0f/(1.0f + expf(-lg[1]));
++            const float post0 = 2.0f/(1.0f + expf(-lg[2]));
++            const float post1 = 2.0f/(1.0f + expf(-lg[3]));
++
++            float m[2][2] = { { lg[4], lg[5] }, { lg[6], lg[7] } };
++            for (int it = 0; it < sink_iters; ++it) {
++                for (int r = 0; r < 2; ++r) {
++                    const float mx  = m[r][0] > m[r][1] ? m[r][0] : m[r][1];
++                    const float lse = mx + logf(expf(m[r][0] - mx) + expf(m[r][1] - mx));
++                    m[r][0] -= lse;
++                    m[r][1] -= lse;
++                }
++                for (int c = 0; c < 2; ++c) {
++                    const float mx  = m[0][c] > m[1][c] ? m[0][c] : m[1][c];
++                    const float lse = mx + logf(expf(m[0][c] - mx) + expf(m[1][c] - mx));
++                    m[0][c] -= lse;
++                    m[1][c] -= lse;
++                }
++            }
++
++            for (int64_t i = 0; i < d; ++i) {
++                po[i] = pre0*va[i] + pre1*vb[i];
++            }
++            po[d + 0] = post0;
++            po[d + 1] = post1;
++            po[d + 2] = expf(m[0][0]);
++            po[d + 3] = expf(m[0][1]);
++            po[d + 4] = expf(m[1][0]);
++            po[d + 5] = expf(m[1][1]);
++        }
++    }
++}
++
++// ggml_compute_forward_mhc_merge
++
++void ggml_compute_forward_mhc_merge(const struct ggml_compute_params * params, struct ggml_tensor * dst) {
++    const struct ggml_tensor * a      = dst->src[0];
++    const struct ggml_tensor * b      = dst->src[1];
++    const struct ggml_tensor * x      = dst->src[2];
++    const struct ggml_tensor * packed = dst->src[3];
++
++    GGML_ASSERT(a->type == GGML_TYPE_F32 && b->type == GGML_TYPE_F32);
++    GGML_ASSERT(x->type == GGML_TYPE_F32 && packed->type == GGML_TYPE_F32);
++    GGML_ASSERT(ggml_is_contiguous(dst));
++    GGML_ASSERT(a->nb[0] == sizeof(float) && x->nb[0] == sizeof(float) && packed->nb[0] == sizeof(float));
++
++    const int64_t d     = a->ne[0];
++    const int64_t n_tok = a->ne[1];
++    const int64_t n_str = a->ne[2];
++
++    float * out = (float *) dst->data;
++
++    for (int64_t s = 0; s < n_str; ++s) {
++        for (int64_t t = params->ith; t < n_tok; t += params->nth) {
++            const float * va = (const float *) ((const char *) a->data + t*a->nb[1] + s*a->nb[2]);
++            const float * vb = (const float *) ((const char *) b->data + t*b->nb[1] + s*b->nb[2]);
++            const float * vx = (const float *) ((const char *) x->data + t*x->nb[1] + s*x->nb[2]);
++            const float * vp = (const float *) ((const char *) packed->data + t*packed->nb[1] + s*packed->nb[2]);
++            float       * vo = out + t*2*d + s*n_tok*2*d;
++
++            const float post0 = vp[d + 0];
++            const float post1 = vp[d + 1];
++            const float m00   = vp[d + 2];
++            const float m01   = vp[d + 3];
++            const float m10   = vp[d + 4];
++            const float m11   = vp[d + 5];
++
++            for (int64_t i = 0; i < d; ++i) {
++                const float vav = va[i];
++                const float vbv = vb[i];
++                const float vxv = vx[i];
++                vo[i]     = m00*vav + m01*vbv + post0*vxv;
++                vo[d + i] = m10*vav + m11*vbv + post1*vxv;
++            }
++        }
++    }
++}
++
+ // ggml_compute_forward_lightning_indexer
+ 
+ void ggml_compute_forward_lightning_indexer(
+diff --git a/ggml/src/ggml-cpu/ops.h b/ggml/src/ggml-cpu/ops.h
+index aac527a64..8c290e9e4 100644
+--- a/ggml/src/ggml-cpu/ops.h
++++ b/ggml/src/ggml-cpu/ops.h
+@@ -102,6 +102,8 @@ void ggml_compute_forward_rwkv_wkv7(const struct ggml_compute_params * params, s
+ void ggml_compute_forward_solve_tri(const struct ggml_compute_params * params, struct ggml_tensor * dst);
+ void ggml_compute_forward_gla(const struct ggml_compute_params * params, struct ggml_tensor * dst);
+ void ggml_compute_forward_gated_delta_net(const struct ggml_compute_params * params, struct ggml_tensor * dst);
++void ggml_compute_forward_mhc_route(const struct ggml_compute_params * params, struct ggml_tensor * dst);
++void ggml_compute_forward_mhc_merge(const struct ggml_compute_params * params, struct ggml_tensor * dst);
+ void ggml_compute_forward_lightning_indexer(const struct ggml_compute_params * params, struct ggml_tensor * dst);
+ void ggml_compute_forward_dsv4_hc_comb(const struct ggml_compute_params * params, struct ggml_tensor * dst);
+ void ggml_compute_forward_dsv4_hc_pre(const struct ggml_compute_params * params, struct ggml_tensor * dst);
+diff --git a/ggml/src/ggml.c b/ggml/src/ggml.c
+index 7132abc51..f65bfb36c 100644
+--- a/ggml/src/ggml.c
++++ b/ggml/src/ggml.c
+@@ -1112,9 +1112,12 @@ static const char * GGML_OP_NAME[GGML_OP_COUNT] = {
+     "OPT_STEP_SGD",
+ 
+     "GLU",
++
++    "MHC_ROUTE",
++    "MHC_MERGE",
+ };
+ 
+-static_assert(GGML_OP_COUNT == 99, "GGML_OP_COUNT != 99");
++static_assert(GGML_OP_COUNT == 101, "GGML_OP_COUNT != 101");
+ 
+ static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
+     "none",
+@@ -1225,9 +1228,12 @@ static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
+     "sgd(x)",
+ 
+     "glu(x)",
++
++    "mhc_route(a, b, w, bias)",
++    "mhc_merge(a, b, x, packed)",
+ };
+ 
+-static_assert(GGML_OP_COUNT == 99, "GGML_OP_COUNT != 99");
++static_assert(GGML_OP_COUNT == 101, "GGML_OP_COUNT != 101");
+ 
+ static_assert(GGML_OP_POOL_COUNT == 2, "GGML_OP_POOL_COUNT != 2");
+ 
+@@ -5619,6 +5625,68 @@ struct ggml_tensor * ggml_ssm_conv(
+     return result;
+ }
+ 
++// ggml_mhc_route: gates + sinkhorn + pre-weighted branch in one node
++
++struct ggml_tensor * ggml_mhc_route(
++        struct ggml_context * ctx,
++        struct ggml_tensor  * a,
++        struct ggml_tensor  * b,
++        struct ggml_tensor  * w,
++        struct ggml_tensor  * bias) {
++    GGML_ASSERT(a->nb[0] == sizeof(float));
++    GGML_ASSERT(b->nb[0] == sizeof(float));
++    GGML_ASSERT(a->type == GGML_TYPE_F32);
++    GGML_ASSERT(b->type == GGML_TYPE_F32);
++    GGML_ASSERT(w->type == GGML_TYPE_F32);
++    GGML_ASSERT(bias->type == GGML_TYPE_F32);
++    GGML_ASSERT(a->ne[0] == b->ne[0] && a->ne[1] == b->ne[1] && a->ne[2] == b->ne[2]);
++    GGML_ASSERT(w->ne[0] == 2*a->ne[0]);
++    GGML_ASSERT(w->ne[1] == 8);
++    GGML_ASSERT(bias->ne[0] == 8);
++
++    const int64_t d = a->ne[0];
++
++    struct ggml_tensor * result = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, d + 6, a->ne[1], a->ne[2]);
++
++    result->op     = GGML_OP_MHC_ROUTE;
++    result->src[0] = a;
++    result->src[1] = b;
++    result->src[2] = w;
++    result->src[3] = bias;
++
++    return result;
++}
++
++struct ggml_tensor * ggml_mhc_merge(
++        struct ggml_context * ctx,
++        struct ggml_tensor  * a,
++        struct ggml_tensor  * b,
++        struct ggml_tensor  * x,
++        struct ggml_tensor  * packed) {
++    GGML_ASSERT(a->nb[0] == sizeof(float));
++    GGML_ASSERT(b->nb[0] == sizeof(float));
++    GGML_ASSERT(x->nb[0] == sizeof(float));
++    GGML_ASSERT(packed->nb[0] == sizeof(float));
++    GGML_ASSERT(a->type == GGML_TYPE_F32 && b->type == GGML_TYPE_F32);
++    GGML_ASSERT(x->type == GGML_TYPE_F32 && packed->type == GGML_TYPE_F32);
++    GGML_ASSERT(a->ne[0] == b->ne[0] && a->ne[0] == x->ne[0]);
++    GGML_ASSERT(a->ne[1] == x->ne[1] && a->ne[2] == x->ne[2]);
++    GGML_ASSERT(packed->ne[0] == a->ne[0] + 6);
++    GGML_ASSERT(packed->ne[1] == a->ne[1] && packed->ne[2] == a->ne[2]);
++
++    const int64_t d = a->ne[0];
++
++    struct ggml_tensor * result = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, 2*d, a->ne[1], a->ne[2]);
++
++    result->op     = GGML_OP_MHC_MERGE;
++    result->src[0] = a;
++    result->src[1] = b;
++    result->src[2] = x;
++    result->src[3] = packed;
++
++    return result;
++}
++
+ // ggml_ssm_scan
+ 
+ struct ggml_tensor * ggml_ssm_scan(
+-- 
+2.56.1
+

@@ -5,9 +5,11 @@ All BC-250 (gfx1013 / PS5 Oberon APU) deltas on top of upstream llama.cpp
 (commit message + unified diff); apply with `git am` (or `git apply` for the
 diff alone).
 
-Patches 0001-0002 and 0006 predate the current session; 0003-0005 were added
-this session. All are already committed in this fork — the files here are the
-exportable, reviewable form.
+Patches 0001-0002 and 0006 predate the current session; 0003-0005 and 0007-0011
+were added this session. All are already committed in this fork — the files here
+are the exportable, reviewable form. 0007-0010 (fused mHC) build on the
+`sensenova_loop` architecture merged from the blueswhen/OpenSenseNova fork; 0011
+refines 0004 (gate the pre-split to RPC backends only).
 
 ## Patches
 
@@ -19,6 +21,11 @@ exportable, reviewable form.
 | 0004 | `0004-llama-pre-split-graph-before-sched_reserve.patch` | `src/llama-context.cpp` | Pre-split graph before `ggml_backend_sched_reserve`. Fixes RPC compute over-allocation (1790 -> 534 MiB) that OOM-killed the remote at ctx 200k. |
 | 0005 | `0005-vulkan-env-gated-FA-quant-KV-LDS-staging-for-BC-250.patch` | `ggml-vulkan.cpp` | Extend BC-250 scalar FA LDS staging from F16-only to quantized K/V, env-gated `GGML_VK_FA_QUANT_STAGING=1`. Correct, ~neutral perf at tested depths. |
 | 0006 | `0006-bc250-make-r3-the-persistent-default-on-.104-with-bo.patch` | `scripts/bc250/` | Boot GPU-readiness service + r3 persistent default for .104 (board-specific init scripts, not core code). |
+| 0007 | `0007-ggml-add-fused-mHC-route-merge-ops.patch` | `ggml.h`, `ggml.c`, `ggml-rpc.h`, `ggml-cpu/` | Fused `MHC_ROUTE`/`MHC_MERGE` ggml ops + CPU reference. SenseNova Loop mHC router (gates + 20-pass Sinkhorn + pre-weighted branch) as a single node. Bumps RPC proto patch version. |
+| 0008 | `0008-vulkan-fused-mHC-route-merge-kernels.patch` | `ggml-vulkan/`, `vulkan-shaders/` | Vulkan fused mHC kernels: route = one workgroup per (token,stream); merge = elementwise. Collapses ~100 tiny dispatches per router into one. |
+| 0009 | `0009-sensenova_loop-use-fused-mHC-ops.patch` | `src/models/` | sensenova_loop graph routes/merges via the fused ops; crops the packed tensor for MTP. On BC-250: pp512 45->382 (8.5x), tg128 7.4->21.7 (2.9x). |
+| 0010 | `0010-tests-mHC-route-merge-backend-ops.patch` | `tests/test-backend-ops.cpp` | mHC route/merge backend-op tests (view/non-view, d=4096/1000, n_tok=1/7/512); 18/18 OK on Vulkan0. |
+| 0011 | `0011-llama-gate-pre-split-graph-to-RPC-backends.patch` | `src/llama-context.cpp` | Gate the 0004 pre-split to RPC backends only. Local-only graphs split better lazily; recovers qwen3vl local pp while keeping the RPC OOM fix. |
 
 ## Apply (to a clean upstream checkout)
 
@@ -49,3 +56,5 @@ processing. Use the patched `libvulkan_radeon.so` via `VK_ICD_FILENAMES`.
 - 0001/0005: `test-backend-ops -o MUL_MAT_ID / FLASH_ATTN_EXT` on Vulkan0 OK.
 - 0003: `test-unicode` passes; flint tokenizes long whitespace/CJK without segfault.
 - 0004: flint ctx 200k over RPC loads/listens (RPC0 compute ~534 MiB).
+- 0007-0010: `test-backend-ops -o MHC_ROUTE,MHC_MERGE` 18/18 OK on Vulkan0; SenseNova-Loop-9B-Q8_0 loads and generates coherent text, pp512 382 / tg128 21.7.
+- 0011: qwen3vl pp512 669->682 (local), qwen3.5-2b tg128 unchanged (~85); RPC pre-split still triggers when an RPC backend is present.
