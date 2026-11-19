@@ -1,0 +1,46 @@
+From 393dc57af9095d6ee5fc7d7ffda973f4158c94eb Mon Sep 17 00:00:00 2001
+From: Naster17 <naster17.dev@gmail.com>
+Date: Thu, 19 Nov 2026 22:02:25 +0100
+Subject: [PATCH] vulkan : env-gated FA staging extensions for BC-250
+ (GGML_VK_FA_STAGING_EXT)
+
+Bitmask: 1 = prefill rows, 2 = shallow KV (<4096), 4 = head dims <=256 other than 128/256.
+Default off (gate unchanged). Correctness: test-backend-ops FLASH_ATTN_EXT with EXT=7 +
+GGML_VK_FA_QUANT_STAGING=1 passes on Vulkan0 (BC-250).
+A/B on .104 (q8_0 KV, ub512, t10): LFM3 pp -0.2..-2.8%, tg@d4096 ~149 all configs;
+gemma4 pp512 -0.5..-1.8%, pp@d4096 -8..-10% with prefill staging, tg unchanged.
+Community staging gains (i-quant MoE) do not transfer to q8_0/f16 KV on this tree;
+knob kept for future i-quant KV experiments. Logs: bench-results/bc250-20261119/.
+
+Assisted-by: Qwen3.8-Max
+---
+ ggml/src/ggml-vulkan/ggml-vulkan.cpp | 9 +++++++--
+ 1 file changed, 7 insertions(+), 2 deletions(-)
+
+diff --git a/ggml/src/ggml-vulkan/ggml-vulkan.cpp b/ggml/src/ggml-vulkan/ggml-vulkan.cpp
+index 0c9d7af0e..b589c127a 100644
+--- a/ggml/src/ggml-vulkan/ggml-vulkan.cpp
++++ b/ggml/src/ggml-vulkan/ggml-vulkan.cpp
+@@ -1290,12 +1290,17 @@ static vk_fa_tuning_params get_fa_tuning_params_scalar(const vk_device& device,
+     result.d_split = std::min(std::min(result.subgroup_size, 8u), D_lsb / 4);
+ 
+     static const bool fa_quant_staging = getenv("GGML_VK_FA_QUANT_STAGING") != nullptr;
++    // BC-250 staging extensions: 1 = prefill rows, 2 = shallow KV, 4 = head dims <= 256 other than 128/256
++    static const int fa_staging_ext = getenv("GGML_VK_FA_STAGING_EXT") != nullptr ? atoi(getenv("GGML_VK_FA_STAGING_EXT")) : 0;
+     const bool bc250_kv_ok = (k_type == GGML_TYPE_F16 && v_type == GGML_TYPE_F16) ||
+         (fa_quant_staging && k_type == v_type &&
+          (k_type == GGML_TYPE_Q8_0 || k_type == GGML_TYPE_Q4_0 || k_type == GGML_TYPE_Q4_1 ||
+           k_type == GGML_TYPE_Q5_0 || k_type == GGML_TYPE_Q5_1));
+-    const bool bc250_staging = ggml_vk_is_bc250_scalar(device) && n_rows <= 8 && n_kv >= 4096 &&
+-                               hsk == hsv && (hsk == 128 || hsk == 256) && bc250_kv_ok;
++    const bool bc250_staging = ggml_vk_is_bc250_scalar(device) &&
++                               (n_rows <= 8 || (fa_staging_ext & 1)) &&
++                               (n_kv >= 4096 || (fa_staging_ext & 2)) &&
++                               hsk == hsv && (hsk == 128 || hsk == 256 || ((fa_staging_ext & 4) && hsk <= 256)) &&
++                               bc250_kv_ok;
+     result.shmem_staging = ((device->vendor_id == VK_VENDOR_ID_NVIDIA && hsk < 256 && hsv < 256) || bc250_staging) ? 1 : 0;
+ 
+     if (!reduce_block_rows && result.block_rows > 1 && !ggml_vk_flash_attn_scalar_shmem_support(device, result, hsk, hsv, f32acc, k_type, v_type)) {
+-- 
+2.56.1
+

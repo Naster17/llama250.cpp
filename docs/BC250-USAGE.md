@@ -67,6 +67,7 @@ Notes:
 | Env | Effect |
 |-----|--------|
 | `GGML_VK_FA_QUANT_STAGING=1` | FA LDS staging for quantized K/V (patch 0003). Correct, ~neutral at tested depths; may help at very long ctx. Off by default. |
+| `GGML_VK_FA_STAGING_EXT=N` | BC-250 FA staging extensions (patch 0014), bitmask: 1=prefill rows, 2=shallow KV (<4096), 4=head dims <=256 other than 128/256. Off by default; A/B on q8_0/f16 KV showed no gain (prefill staging slightly negative). For i-quant KV experiments. |
 
 ## 6. Benchmark
 
