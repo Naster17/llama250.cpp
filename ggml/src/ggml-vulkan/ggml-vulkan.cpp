@@ -6519,7 +6519,9 @@ static uint32_t ggml_vk_guess_split_k(ggml_backend_vk_context * ctx, uint32_t m,
         return 1;
     }
 
-    const bool rdna = ctx->device->architecture == AMD_RDNA3 || ctx->device->architecture == AMD_RDNA4;
+    // BC-250 is RDNA1-class with the same small-n latency problem (env-gated)
+    const bool bc250_splitk = ggml_vk_is_bc250_scalar(ctx->device) && getenv("GGML_VK_BC250_SPLITK") != nullptr;
+    const bool rdna = ctx->device->architecture == AMD_RDNA3 || ctx->device->architecture == AMD_RDNA4 || bc250_splitk;
     uint32_t split_k = narrow_n && ctx->device->shader_core_count == 0 ? 8u : 1u;
     if ((narrow_n || rdna) && ctx->device->shader_core_count != 0 && k >= 2048 && n <= 32) {
         // Small n gives too few workgroups to hide latency, aim for 8 per CU.
