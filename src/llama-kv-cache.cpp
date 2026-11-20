@@ -1699,6 +1699,9 @@ struct args_set_input_attn_mask {
 
     // every token of a sequence reuses the mask row of the first one (dspark draft blocks)
     bool block_uniform;
+
+    // experimental: sliding window applied to the full-attn (non-SWA) mask, 0 = off
+    uint32_t full_window;
 };
 
 template<typename T, bool causal, bool swa, bool is_2d, bool alibi>
@@ -1711,6 +1714,8 @@ static void set_input_attn_mask_impl(const args_set_input_attn_mask & args, T * 
 
     const uint32_t       n_swa    = args.n_swa;
     const llama_swa_type swa_type = args.swa_type;
+
+    const uint32_t full_window = args.full_window;
 
     const int64_t n_kv     = args.n_kv;
     const int64_t n_stream = args.n_stream;
@@ -1772,7 +1777,7 @@ static void set_input_attn_mask_impl(const args_set_input_attn_mask & args, T * 
 
             auto & idxs = seq_idxs[seq_id];
 
-            if (!alibi) {
+            if (!alibi && full_window == 0) {
                 if (seq_srct.find(seq_id) != seq_srct.end()) {
                     const uint32_t srct = seq_srct[seq_id];
 
@@ -1843,6 +1848,11 @@ static void set_input_attn_mask_impl(const args_set_input_attn_mask & args, T * 
                             }
                         }
                     }
+                }
+
+                // experimental full-attn sliding window: drop positions older than full_window
+                if (full_window > 0 && p0 + (int32_t) full_window <= p1) {
+                    goto skip;
                 }
 
                 // apply SWA if any
@@ -1953,6 +1963,7 @@ void llama_kv_cache::set_input_attn_mask(const llm_attn_mask & attn_mask, const 
         }
 
         //const int64_t t_start = ggml_time_us();
+        static const uint32_t fa_full_window = getenv("GGML_VK_FA_FULL_WINDOW") ? (uint32_t) atoi(getenv("GGML_VK_FA_FULL_WINDOW")) : 0;
 
         const args_set_input_attn_mask args = {
             /*.hparams          =*/ hparams,
@@ -1966,6 +1977,7 @@ void llama_kv_cache::set_input_attn_mask(const llm_attn_mask & attn_mask, const 
             /*.n_tps            =*/ n_tps,
             /*.rows             =*/ rows,
             /*.block_uniform    =*/ attn_mask.block_uniform,
+            /*.full_window      =*/ n_swa == 0 ? fa_full_window : 0,
         };
 
         if (dst->type == GGML_TYPE_F16) {

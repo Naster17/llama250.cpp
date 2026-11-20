@@ -3141,6 +3141,11 @@ ggml_tensor * llm_graph_context::build_attn_mha(
         res->add_fused_node({kv_rows ? LLM_FUSED_OP_FLASH_ATTN_KV_ROWS : LLM_FUSED_OP_FLASH_ATTN, cur, il});
 
         ggml_flash_attn_ext_add_sinks(cur, sinks);
+        // experimental: sparse full-attn via sliding window (matches GGML_VK_FA_FULL_WINDOW mask)
+        static const uint32_t fa_full_window = getenv("GGML_VK_FA_FULL_WINDOW") ? (uint32_t) atoi(getenv("GGML_VK_FA_FULL_WINDOW")) : 0;
+        if (fa_full_window > 0 && !hparams.is_swa(il)) {
+            n_kv_max = fa_full_window;
+        }
         GGML_ASSERT(n_kv_max >= 0 && n_kv_max <= INT32_MAX);
         ggml_flash_attn_ext_set_n_kv_max(cur, static_cast<int32_t>(n_kv_max));
         ggml_prec_set_acc(cur, GGML_PREC_F32);
