@@ -1,0 +1,172 @@
+From 272760a575ee5240038d3c673242d798cf5a712c Mon Sep 17 00:00:00 2001
+From: Naster17 <naster17.dev@gmail.com>
+Date: Fri, 20 Nov 2026 02:41:17 +0100
+Subject: [PATCH] vulkan : cached host buffers + NT staging copies for BC-250
+ (GGML_VK_HOST_MALLOC_CACHED)
+
+RADV gfx1013 exposes no HOST_CACHED memory: CPU reads of GPU-written WC buffers
+run at ~100 MB/s, costing ~10 ms/token on the 1 MB logits row (vocab 262k).
+- ggml_vk_memcpy_from_wc: movntdqa staging->host copy (4.8 GB/s measured, 45x),
+  target(sse4.1) attribute + runtime check, applied at all out_memcpys sites.
+- GGML_VK_HOST_MALLOC_CACHED=1: host_malloc uses cached malloc+register and the
+  AMD host-import gate is lifted under the env; output buffer lands in cached RAM.
+gemma4-26B: serving tg 47.8->88.3 (+85%), pp2048 852->904 (+6%), greedy identical.
+Default off; llama250.sh enables it. Debug instrumentation removed.
+
+Assisted-by: Qwen3.8-Max
+---
+ ggml/src/ggml-vulkan/ggml-vulkan-buffers.cpp | 50 ++++++++++++++++++--
+ ggml/src/ggml-vulkan/ggml-vulkan-common.h    |  1 +
+ ggml/src/ggml-vulkan/ggml-vulkan.cpp         | 14 ++++--
+ 3 files changed, 58 insertions(+), 7 deletions(-)
+
+diff --git a/ggml/src/ggml-vulkan/ggml-vulkan-buffers.cpp b/ggml/src/ggml-vulkan/ggml-vulkan-buffers.cpp
+index ed814b59f..b535e0153 100644
+--- a/ggml/src/ggml-vulkan/ggml-vulkan-buffers.cpp
++++ b/ggml/src/ggml-vulkan/ggml-vulkan-buffers.cpp
+@@ -284,7 +284,10 @@ void * ggml_vk_host_malloc(size_t size) {
+ 
+     ggml_vk_instance_init();
+ 
+-    if (vk_instance.multi_device) {
++    // GGML_VK_HOST_MALLOC_CACHED: use cached malloc + host import instead of WC vkAllocateMemory.
++    // CPU reads of GPU-written WC memory are ~100 MB/s on this chip; cached imports read at full speed.
++    static const bool cached_host = getenv("GGML_VK_HOST_MALLOC_CACHED") != nullptr;
++    if (vk_instance.multi_device || cached_host) {
+         const size_t align      = std::max<size_t>(vk_instance.host_import_alignment, TENSOR_ALIGNMENT);
+         const size_t alloc_size = (size + align - 1) / align * align;
+ 
+@@ -367,7 +370,8 @@ void ggml_vk_host_get(const vk_device& device, const void * ptr, vk_buffer& buf,
+ 
+     if (entry.views[device->idx] == nullptr) {
+         const uint32_t bit = 1u << device->idx;
+-        if (!vk_instance.multi_device || !vk_instance.device_host_buffer_import[device->idx] || (vk_instance.host_import_failed & bit)) {
++        static const bool cached_host = getenv("GGML_VK_HOST_MALLOC_CACHED") != nullptr;
++        if ((!vk_instance.multi_device && !cached_host) || !vk_instance.device_host_buffer_import[device->idx] || (vk_instance.host_import_failed & bit)) {
+             return;
+         }
+         GGML_ASSERT(device->external_memory_host);
+@@ -410,6 +414,46 @@ static vk_context ggml_vk_begin_sync_ctx(vk_device & device, vk_command_pool & p
+     return subctx;
+ }
+ 
++// Copy from write-combining staging memory. Regular loads from WC run at ~100 MB/s
++// on amdgpu GTT; non-temporal loads (movntdqa) stream at ~4.8 GB/s (measured on BC-250).
++// ggml-vulkan is not built with -march=native: target attribute + runtime check.
++#if defined(__x86_64__)
++#include <immintrin.h>
++__attribute__((target("sse4.1")))
++static void ggml_vk_memcpy_nt(void * dst, const void * src, size_t n) {
++    const uint8_t * s = (const uint8_t *) src;
++    uint8_t * d = (uint8_t *) dst;
++    const size_t head = (16 - ((uintptr_t) s & 15)) & 15;
++    size_t i = head < n ? head : n;
++    memcpy(d, s, i);
++    for (; i + 64 <= n; i += 64) {
++        __m128i a = _mm_stream_load_si128((__m128i *) (s + i));
++        __m128i b = _mm_stream_load_si128((__m128i *) (s + i + 16));
++        __m128i c = _mm_stream_load_si128((__m128i *) (s + i + 32));
++        __m128i e = _mm_stream_load_si128((__m128i *) (s + i + 48));
++        _mm_storeu_si128((__m128i *) (d + i), a);
++        _mm_storeu_si128((__m128i *) (d + i + 16), b);
++        _mm_storeu_si128((__m128i *) (d + i + 32), c);
++        _mm_storeu_si128((__m128i *) (d + i + 48), e);
++    }
++    for (; i + 16 <= n; i += 16) {
++        _mm_storeu_si128((__m128i *) (d + i), _mm_stream_load_si128((__m128i *) (s + i)));
++    }
++    if (i < n) {
++        memcpy(d + i, s + i, n - i);
++    }
++}
++#endif
++void ggml_vk_memcpy_from_wc(void * dst, const void * src, size_t n) {
++#if defined(__x86_64__)
++    if (n >= 16 && __builtin_cpu_supports("sse4.1")) {
++        ggml_vk_memcpy_nt(dst, src, n);
++        return;
++    }
++#endif
++    memcpy(dst, src, n);
++}
++
+ static void ggml_vk_submit_sync(vk_device & device, vk_context & subctx) {
+     ggml_vk_ctx_end(subctx);
+ 
+@@ -427,7 +471,7 @@ static void ggml_vk_submit_sync(vk_device & device, vk_context & subctx) {
+     ggml_vk_queue_command_pools_cleanup(device);
+ 
+     for (auto & cpy : subctx->out_memcpys) {
+-        memcpy(cpy.dst, cpy.src, cpy.n);
++        ggml_vk_memcpy_from_wc(cpy.dst, cpy.src, cpy.n);
+     }
+ }
+ 
+diff --git a/ggml/src/ggml-vulkan/ggml-vulkan-common.h b/ggml/src/ggml-vulkan/ggml-vulkan-common.h
+index ea3b3b4b8..c1d0e1819 100644
+--- a/ggml/src/ggml-vulkan/ggml-vulkan-common.h
++++ b/ggml/src/ggml-vulkan/ggml-vulkan-common.h
+@@ -48,6 +48,7 @@ void ggml_vk_destroy_buffer(vk_buffer& buf);
+ void * ggml_vk_host_malloc(size_t size);
+ void ggml_vk_host_free(void * ptr);
+ void ggml_vk_host_get(const vk_device& device, const void * ptr, vk_buffer& buf, size_t& buf_offset);
++void ggml_vk_memcpy_from_wc(void * dst, const void * src, size_t n);
+ void ggml_vk_ensure_sync_staging_buffer(vk_device& device, size_t size);
+ void ggml_vk_ensure_sync_staging_buffer(ggml_backend_vk_context * ctx, size_t size);
+ bool ggml_vk_buffer_write_2d_async(vk_context subctx, vk_buffer& dst, size_t offset, const void * src, size_t spitch, size_t dpitch, size_t width, size_t height, bool sync_staging = false);
+diff --git a/ggml/src/ggml-vulkan/ggml-vulkan.cpp b/ggml/src/ggml-vulkan/ggml-vulkan.cpp
+index 3666f5ebe..c0a247285 100644
+--- a/ggml/src/ggml-vulkan/ggml-vulkan.cpp
++++ b/ggml/src/ggml-vulkan/ggml-vulkan.cpp
+@@ -6056,8 +6056,9 @@ void ggml_vk_instance_init() {
+             props2.pNext = &driver_props;
+             driver_props.pNext = &ext_props;
+             vkdev.getProperties2(&props2);
+-            host_buffer_import = ggml_vk_external_memory_host_usable(driver_props.driverID) &&
+-                                 ggml_vk_host_buffer_import_usable(props2.properties.vendorID);
++            host_buffer_import = (ggml_vk_external_memory_host_usable(driver_props.driverID) &&
++                                 ggml_vk_host_buffer_import_usable(props2.properties.vendorID)) ||
++                                 getenv("GGML_VK_HOST_MALLOC_CACHED") != nullptr;
+             if (host_buffer_import) {
+                 vk_instance.host_import_alignment = std::max<size_t>(vk_instance.host_import_alignment, ext_props.minImportedHostPointerAlignment);
+                 host_buffer_import_count++;
+@@ -6504,6 +6505,7 @@ void deferred_memcpy(void * dst, const void * src, size_t size, std::vector<vk_s
+     }
+ }
+ 
++
+ void deferred_memset(void * dst, uint32_t val, size_t size, std::vector<vk_staging_memset>* memsets) {
+     if (memsets == nullptr) {
+         memset(dst, val, size);
+@@ -13890,7 +13892,7 @@ void ggml_vk_compute_forward(ggml_backend_vk_context * ctx, ggml_cgraph * cgraph
+     if (tensor_idx == subctx->exit_tensor_idx) {
+         // Do staging buffer copies
+         for (auto& cpy : subctx->out_memcpys) {
+-            memcpy(cpy.dst, cpy.src, cpy.n);
++            ggml_vk_memcpy_from_wc(cpy.dst, cpy.src, cpy.n);
+         }
+         subctx->in_memcpys.clear();
+         subctx->out_memcpys.clear();
+@@ -14413,6 +14415,10 @@ static void ggml_backend_vk_get_tensor_2d_async(ggml_backend_t backend, const gg
+         }
+ 
+         compute_ctx->s->buffer->buf.copyBuffer(buf->buffer, ctx->sync_staging->buffer, slices);
++        // Make GPU writes visible to CPU reads before the staging memcpy (amdgpu WC flush)
++        compute_ctx->s->buffer->buf.pipelineBarrier(
++            vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eHost,
++            {}, { { vk::AccessFlagBits::eTransferWrite, vk::AccessFlagBits::eHostRead } }, {}, {});
+ 
+         if (size == stride_data) {
+             deferred_memcpy(data, ctx->sync_staging->ptr, staging_size, &compute_ctx->out_memcpys);
+@@ -14566,7 +14572,7 @@ void ggml_vk_synchronize(ggml_backend_vk_context * ctx) {
+ 
+     if (do_transfer) {
+         for (auto& cpy : compute_ctx->out_memcpys) {
+-            memcpy(cpy.dst, cpy.src, cpy.n);
++            ggml_vk_memcpy_from_wc(cpy.dst, cpy.src, cpy.n);
+         }
+         ctx->compute_ctx.reset();
+     }
+-- 
+2.56.1
+

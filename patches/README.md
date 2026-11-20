@@ -33,6 +33,7 @@ refines 0004 (gate the pre-split to RPC backends only).
 | 0016 | `0016-vulkan-IQ2-IQ3_S-dequant-sign-via-conditional-negati.patch` | `vulkan-shaders/dequant_funcs.glsl` | Extend 0013 sign trick to IQ2_XXS/IQ2_XS/IQ2_S/IQ3_S (all 8 remaining +/-1 multiply sites). MUL_MAT,MUL_MAT_VEC 2604/2604 OK on Vulkan0. End-to-end pp check pending an on-disk IQ2_S/IQ3_S model. |
 | 0017 | `0017-vulkan-BC-250-small-n-split-k-GGML_VK_BC250_SPLITK.patch` | `ggml-vulkan.cpp` | Env-gated small-n split-k for gfx1013 (RDNA1-class missed the RDNA3/4 clauses). LFM3 pp16 +31%, pp32 +27%; qwen3.5-2b pp16 +8.5%; large pp unchanged. MUL_MAT suite OK. Default off. |
 | 0018 | `0018-rpc-async-cross-backend-copies-async-path-wire-compr.patch` | `ggml-rpc.cpp` | `GGML_RPC_ASYNC_COPY=1`: cpy_tensor_async (host<->RPC queued; cross-server GET->SET chained via wait_before future), Q8_0/BF16 compression on set_tensor_async, BF16 cross-server copies. No proto change. test-rpc-multi-server OK; greedy identity OK; perf NEUTRAL on 1GbE (wire/RTT-bound, not copy-sync-bound). Default off. |
+| 0019 | `0019-vulkan-cached-host-buffers-NT-staging-copies-for-BC-.patch` | `ggml-vulkan.cpp`, `ggml-vulkan-buffers.cpp`, `ggml-vulkan-common.h` | `GGML_VK_HOST_MALLOC_CACHED=1`: cached malloc host buffers + AMD host-import gate lift; NT (movntdqa) staging->host copies at all out_memcpys sites. Fixes ~10 ms/token WC logits reads (RADV gfx1013 has no HOST_CACHED memory): gemma4 serving tg 47.8->88.3 (+85%), pp2048 +6%, greedy identical. Default off; launcher sets 1. |
 
 ## Apply (to a clean upstream checkout)
 
@@ -74,6 +75,7 @@ Use stock Mesa (int dot OFF). See `Naster17/bc250-mesa`
 - 0016: `test-backend-ops -o MUL_MAT,MUL_MAT_VEC` 2604/2604 OK on Vulkan0.
 - 0017: `test-backend-ops -o MUL_MAT` with GGML_VK_BC250_SPLITK=1 OK; LFM3 pp16 728->954, pp32 1490->1893; qwen3.5-2b-f16 pp16 285->310.
 - 0018: `tests/test-rpc-multi-server.sh` with GGML_RPC_ASYNC_COPY=1 + GGML_RPC_WIRE_BF16=1 OK; 2-board LFM3 greedy output identical base vs async; gemma4 cluster pp/tg neutral (logs in bench-results/bc250-20261119/).
+- 0019: gemma4 server tg 88.3 vs 47.8 baseline (temp 0, 256 tokens, greedy content identical); llama-bench pp512 936 / pp2048 904 / tg128 91.5; wc-copy-bench: memcpy 106 MB/s vs NT 4821 MB/s; launcher knob matrix (CACHE x MMID_TUNE) all load 31 s, tg 87.5-88.3.
 
 ## Release v1.1.0
 

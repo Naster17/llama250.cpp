@@ -21,6 +21,8 @@
 #   CACHE=1              prompt caching + checkpoints (set 0 to disable)
 #   MMID_TUNE=1          MoE ID tile tuning, per-expert fit (+7.6% MoE pp at ub512
 #                        on gemma4, neutral elsewhere; 0 disables)
+#   HOST_CACHED=1        cached host buffers via malloc+import (fixes ~10ms/token WC logits
+#                        reads on BC-250; +80% serving tg measured; 0 disables)
 #   EXTRA_ARGS           appended verbatim
 #
 # Notes:
@@ -47,6 +49,7 @@ KVU="${KVU:-1}"
 CACHE="${CACHE:-1}"
 LM="${LM:-dio}"
 export GGML_VK_BC250_MMID_TUNE="${MMID_TUNE:-1}"
+export GGML_VK_HOST_MALLOC_CACHED="${HOST_CACHED:-1}"
 
 args=( -m "$MODEL" --host 0.0.0.0 --port "$PORT"
        -ngl "$NGL" -t "$THREADS" -tb "$THREADS"
