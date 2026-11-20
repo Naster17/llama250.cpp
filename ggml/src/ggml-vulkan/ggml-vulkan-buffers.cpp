@@ -284,7 +284,10 @@ void * ggml_vk_host_malloc(size_t size) {
 
     ggml_vk_instance_init();
 
-    if (vk_instance.multi_device) {
+    // GGML_VK_HOST_MALLOC_CACHED: use cached malloc + host import instead of WC vkAllocateMemory.
+    // CPU reads of GPU-written WC memory are ~100 MB/s on this chip; cached imports read at full speed.
+    static const bool cached_host = getenv("GGML_VK_HOST_MALLOC_CACHED") != nullptr;
+    if (vk_instance.multi_device || cached_host) {
         const size_t align      = std::max<size_t>(vk_instance.host_import_alignment, TENSOR_ALIGNMENT);
         const size_t alloc_size = (size + align - 1) / align * align;
 
@@ -367,7 +370,8 @@ void ggml_vk_host_get(const vk_device& device, const void * ptr, vk_buffer& buf,
 
     if (entry.views[device->idx] == nullptr) {
         const uint32_t bit = 1u << device->idx;
-        if (!vk_instance.multi_device || !vk_instance.device_host_buffer_import[device->idx] || (vk_instance.host_import_failed & bit)) {
+        static const bool cached_host = getenv("GGML_VK_HOST_MALLOC_CACHED") != nullptr;
+        if ((!vk_instance.multi_device && !cached_host) || !vk_instance.device_host_buffer_import[device->idx] || (vk_instance.host_import_failed & bit)) {
             return;
         }
         GGML_ASSERT(device->external_memory_host);
@@ -410,6 +414,46 @@ static vk_context ggml_vk_begin_sync_ctx(vk_device & device, vk_command_pool & p
     return subctx;
 }
 
+// Copy from write-combining staging memory. Regular loads from WC run at ~100 MB/s
+// on amdgpu GTT; non-temporal loads (movntdqa) stream at ~4.8 GB/s (measured on BC-250).
+// ggml-vulkan is not built with -march=native: target attribute + runtime check.
+#if defined(__x86_64__)
+#include <immintrin.h>
+__attribute__((target("sse4.1")))
+static void ggml_vk_memcpy_nt(void * dst, const void * src, size_t n) {
+    const uint8_t * s = (const uint8_t *) src;
+    uint8_t * d = (uint8_t *) dst;
+    const size_t head = (16 - ((uintptr_t) s & 15)) & 15;
+    size_t i = head < n ? head : n;
+    memcpy(d, s, i);
+    for (; i + 64 <= n; i += 64) {
+        __m128i a = _mm_stream_load_si128((__m128i *) (s + i));
+        __m128i b = _mm_stream_load_si128((__m128i *) (s + i + 16));
+        __m128i c = _mm_stream_load_si128((__m128i *) (s + i + 32));
+        __m128i e = _mm_stream_load_si128((__m128i *) (s + i + 48));
+        _mm_storeu_si128((__m128i *) (d + i), a);
+        _mm_storeu_si128((__m128i *) (d + i + 16), b);
+        _mm_storeu_si128((__m128i *) (d + i + 32), c);
+        _mm_storeu_si128((__m128i *) (d + i + 48), e);
+    }
+    for (; i + 16 <= n; i += 16) {
+        _mm_storeu_si128((__m128i *) (d + i), _mm_stream_load_si128((__m128i *) (s + i)));
+    }
+    if (i < n) {
+        memcpy(d + i, s + i, n - i);
+    }
+}
+#endif
+void ggml_vk_memcpy_from_wc(void * dst, const void * src, size_t n) {
+#if defined(__x86_64__)
+    if (n >= 16 && __builtin_cpu_supports("sse4.1")) {
+        ggml_vk_memcpy_nt(dst, src, n);
+        return;
+    }
+#endif
+    memcpy(dst, src, n);
+}
+
 static void ggml_vk_submit_sync(vk_device & device, vk_context & subctx) {
     ggml_vk_ctx_end(subctx);
 
@@ -427,7 +471,7 @@ static void ggml_vk_submit_sync(vk_device & device, vk_context & subctx) {
     ggml_vk_queue_command_pools_cleanup(device);
 
     for (auto & cpy : subctx->out_memcpys) {
-        memcpy(cpy.dst, cpy.src, cpy.n);
+        ggml_vk_memcpy_from_wc(cpy.dst, cpy.src, cpy.n);
     }
 }
 

@@ -6056,8 +6056,9 @@ void ggml_vk_instance_init() {
             props2.pNext = &driver_props;
             driver_props.pNext = &ext_props;
             vkdev.getProperties2(&props2);
-            host_buffer_import = ggml_vk_external_memory_host_usable(driver_props.driverID) &&
-                                 ggml_vk_host_buffer_import_usable(props2.properties.vendorID);
+            host_buffer_import = (ggml_vk_external_memory_host_usable(driver_props.driverID) &&
+                                 ggml_vk_host_buffer_import_usable(props2.properties.vendorID)) ||
+                                 getenv("GGML_VK_HOST_MALLOC_CACHED") != nullptr;
             if (host_buffer_import) {
                 vk_instance.host_import_alignment = std::max<size_t>(vk_instance.host_import_alignment, ext_props.minImportedHostPointerAlignment);
                 host_buffer_import_count++;
@@ -6503,6 +6504,7 @@ void deferred_memcpy(void * dst, const void * src, size_t size, std::vector<vk_s
         memcpys->emplace_back(dst, src, size);
     }
 }
+
 
 void deferred_memset(void * dst, uint32_t val, size_t size, std::vector<vk_staging_memset>* memsets) {
     if (memsets == nullptr) {
@@ -13890,7 +13892,7 @@ void ggml_vk_compute_forward(ggml_backend_vk_context * ctx, ggml_cgraph * cgraph
     if (tensor_idx == subctx->exit_tensor_idx) {
         // Do staging buffer copies
         for (auto& cpy : subctx->out_memcpys) {
-            memcpy(cpy.dst, cpy.src, cpy.n);
+            ggml_vk_memcpy_from_wc(cpy.dst, cpy.src, cpy.n);
         }
         subctx->in_memcpys.clear();
         subctx->out_memcpys.clear();
@@ -14413,6 +14415,10 @@ static void ggml_backend_vk_get_tensor_2d_async(ggml_backend_t backend, const gg
         }
 
         compute_ctx->s->buffer->buf.copyBuffer(buf->buffer, ctx->sync_staging->buffer, slices);
+        // Make GPU writes visible to CPU reads before the staging memcpy (amdgpu WC flush)
+        compute_ctx->s->buffer->buf.pipelineBarrier(
+            vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eHost,
+            {}, { { vk::AccessFlagBits::eTransferWrite, vk::AccessFlagBits::eHostRead } }, {}, {});
 
         if (size == stride_data) {
             deferred_memcpy(data, ctx->sync_staging->ptr, staging_size, &compute_ctx->out_memcpys);
@@ -14566,7 +14572,7 @@ void ggml_vk_synchronize(ggml_backend_vk_context * ctx) {
 
     if (do_transfer) {
         for (auto& cpy : compute_ctx->out_memcpys) {
-            memcpy(cpy.dst, cpy.src, cpy.n);
+            ggml_vk_memcpy_from_wc(cpy.dst, cpy.src, cpy.n);
         }
         ctx->compute_ctx.reset();
     }
