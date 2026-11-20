@@ -126,10 +126,23 @@ Per ubatch chunk at pp8192, gemma4 (5 full-attn layers, head_dim 512, 2 KV heads
 | 10GbE (~1.1 GB/s) | ~150 ms | ~130 ms | ~breakeven/slight win |
 | 25GbE+ | ~60 ms | ~130 ms | clear win, scales with context |
 
-At longer context (30k+) the FA compute saved grows O(n^2) while transfer grows
-O(n), so faster links benefit more. But on 1GbE context parallelism is always
-net-negative for pp. Layer-split RPC works on 1GbE only because it crosses small
-activations once per ubatch, not the whole KV.
+CORRECTION (per-chunk ratio is constant, not improving with context): per chunk
+the query count is fixed (ubatch), so FA compute saved is LINEAR in context
+(n_q * n_kv), and the KV transfer is also LINEAR in n_kv. Their ratio is
+therefore constant (~6x loss full-duplex ring, ~10x simplex) at ANY context -
+8k or 150k alike. (Whole-prefill totals are O(n^2) for both, ratio unchanged.)
+An earlier "break-even at ~94k" claim was wrong; 1GbE never wins for pp.
+USB 5Gbps (~450 MB/s practical, the BC-250 I/O ceiling) cuts the ratio to ~1.4x
+loss - still negative; ~625 MB/s theoretical is only ~breakeven. So a faster
+link alone does not rescue context parallelism on this board.
+
+The real workaround for 100k-150k on slow links is to shrink the attention work
+itself: sparse / evicted KV for the full-attn layers (SnapKV/H2O-style selection).
+That reduces both the O(n^2) compute AND the KV transfer (fewer positions), works
+on a SINGLE board (no network), and the Vulkan sparse-FA gather path already
+exists (use_sparse / n_kv_max). Cost: approximation quality, needs eval. See
+bc250.md sec 9.2 idea 3. Layer-split RPC works on 1GbE only because it crosses
+small activations once per ubatch, not the whole KV.
 
 ## 6. Risks and complexity
 
