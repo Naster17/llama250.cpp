@@ -3141,10 +3141,15 @@ ggml_tensor * llm_graph_context::build_attn_mha(
         res->add_fused_node({kv_rows ? LLM_FUSED_OP_FLASH_ATTN_KV_ROWS : LLM_FUSED_OP_FLASH_ATTN, cur, il});
 
         ggml_flash_attn_ext_add_sinks(cur, sinks);
-        // experimental: sparse full-attn via sliding window (matches GGML_VK_FA_FULL_WINDOW mask)
+        // experimental: sparse full-attn via window + landmarks (matches GGML_VK_FA_FULL_WINDOW mask)
         static const uint32_t fa_full_window = getenv("GGML_VK_FA_FULL_WINDOW") ? (uint32_t) atoi(getenv("GGML_VK_FA_FULL_WINDOW")) : 0;
+        static const uint32_t fa_landmark_stride = getenv("GGML_VK_FA_LANDMARK_STRIDE") ? (uint32_t) atoi(getenv("GGML_VK_FA_LANDMARK_STRIDE")) : 0;
         if (fa_full_window > 0 && !hparams.is_swa(il)) {
-            n_kv_max = fa_full_window;
+            int64_t budget = fa_full_window;
+            if (fa_landmark_stride > 0 && kq_mask) {
+                budget += (kq_mask->ne[0] + fa_landmark_stride - 1) / fa_landmark_stride;
+            }
+            n_kv_max = budget;
         }
         GGML_ASSERT(n_kv_max >= 0 && n_kv_max <= INT32_MAX);
         ggml_flash_attn_ext_set_n_kv_max(cur, static_cast<int32_t>(n_kv_max));

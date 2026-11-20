@@ -1702,6 +1702,9 @@ struct args_set_input_attn_mask {
 
     // experimental: sliding window applied to the full-attn (non-SWA) mask, 0 = off
     uint32_t full_window;
+
+    // experimental: stride for landmark tokens kept outside the full-attn window, 0 = off
+    uint32_t landmark_stride;
 };
 
 template<typename T, bool causal, bool swa, bool is_2d, bool alibi>
@@ -1716,6 +1719,7 @@ static void set_input_attn_mask_impl(const args_set_input_attn_mask & args, T * 
     const llama_swa_type swa_type = args.swa_type;
 
     const uint32_t full_window = args.full_window;
+    const uint32_t landmark_stride = args.landmark_stride;
 
     const int64_t n_kv     = args.n_kv;
     const int64_t n_stream = args.n_stream;
@@ -1777,7 +1781,7 @@ static void set_input_attn_mask_impl(const args_set_input_attn_mask & args, T * 
 
             auto & idxs = seq_idxs[seq_id];
 
-            if (!alibi && full_window == 0) {
+            if (!alibi) {
                 if (seq_srct.find(seq_id) != seq_srct.end()) {
                     const uint32_t srct = seq_srct[seq_id];
 
@@ -1825,8 +1829,9 @@ static void set_input_attn_mask_impl(const args_set_input_attn_mask & args, T * 
 
                 if (!alibi) {
                     if (!prev) {
-                        // record all cells for which: p0 >= seq_pos_min[seq_id] - n_swa - 32
-                        if (p0 + (int32_t) (n_swa + 32) >= seq_pos_min[seq_id]) {
+                        // record cells that can change between rows: causal/SWA boundary plus the
+                        // moving full-attn window boundary (p0 ~ p1 - full_window)
+                        if (p0 + (int32_t) (n_swa + full_window + 32) >= seq_pos_min[seq_id]) {
                             idxs.push_back(c);
                         }
                     }
@@ -1850,9 +1855,11 @@ static void set_input_attn_mask_impl(const args_set_input_attn_mask & args, T * 
                     }
                 }
 
-                // experimental full-attn sliding window: drop positions older than full_window
+                // experimental full-attn sparsity: keep the recent window plus strided landmarks
                 if (full_window > 0 && p0 + (int32_t) full_window <= p1) {
-                    goto skip;
+                    if (landmark_stride == 0 || (p0 % (int32_t) landmark_stride) != 0) {
+                        goto skip;
+                    }
                 }
 
                 // apply SWA if any
@@ -1964,6 +1971,7 @@ void llama_kv_cache::set_input_attn_mask(const llm_attn_mask & attn_mask, const 
 
         //const int64_t t_start = ggml_time_us();
         static const uint32_t fa_full_window = getenv("GGML_VK_FA_FULL_WINDOW") ? (uint32_t) atoi(getenv("GGML_VK_FA_FULL_WINDOW")) : 0;
+        static const uint32_t fa_landmark_stride = getenv("GGML_VK_FA_LANDMARK_STRIDE") ? (uint32_t) atoi(getenv("GGML_VK_FA_LANDMARK_STRIDE")) : 0;
 
         const args_set_input_attn_mask args = {
             /*.hparams          =*/ hparams,
@@ -1978,6 +1986,7 @@ void llama_kv_cache::set_input_attn_mask(const llm_attn_mask & attn_mask, const 
             /*.rows             =*/ rows,
             /*.block_uniform    =*/ attn_mask.block_uniform,
             /*.full_window      =*/ n_swa == 0 ? fa_full_window : 0,
+            /*.landmark_stride  =*/ n_swa == 0 ? fa_landmark_stride : 0,
         };
 
         if (dst->type == GGML_TYPE_F16) {
