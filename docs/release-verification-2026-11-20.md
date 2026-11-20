@@ -42,13 +42,25 @@ the main line). Master is quality-first.
 
 ## Known issues (not release-blockers for the tested paths)
 
-- Qwen3.5-35B-A3B RPC layer-split bench PANICKED .104 (GPU hang -> oops=panic ->
-  reboot; board auto-recovered). Model-specific RPC instability; needs separate
-  investigation before that model is used over RPC. gemma4 RPC is stable.
-- llama-cli + RPC offload segfaults at load (upstream bug); llama-bench/server work.
-- RPC row-split (-sm row) unsupported (no split buffers).
-- pp at ub1024 + very long context (>=32k) can hit a 1GB buffer allocation limit;
-  use ub512 for long context.
+- Qwen3.5-35B-A3B RPC hang/panic: ROOT CAUSE = memory ceiling, not a code bug.
+  The Q5_K_XL file is 26.4 GB; layer-split 50/50 puts 13.2 GB of weights on each
+  15 GB board, leaving ~1.8 GB for KV + compute + RPC weight-transfer staging.
+  That overflows -> allocation hang -> GPU hang -> oops=panic -> reboot (auto-
+  recovered). Even a minimal ub128/pp64 config hangs at load. FIX: use a smaller
+  quant (Q4_K_XL ~21 GB -> 10.5 GB/board fits with headroom) or a smaller model.
+  gemma4 (14.2 GB) RPC is stable because it leaves ample headroom.
+- pp ub1024 + long context (>=32k) "1GB buffer" failure: ROOT CAUSE = OOM (exit
+  137), same memory ceiling. gemma4 weights occupy 14.2 GB of 15 GB (GTT 13.8 GB
+  + VRAM 0.4 GB measured), leaving ~0.8 GB; the 32k KV + ub1024 compute buffers
+  (the FA split_k temporary grows to ~1 GB) exceed it. FIX: ub512 for long
+  context (halves compute buffers, verified 520 t/s @32k), and/or q4_0 KV (halves
+  KV memory), and/or a smaller weight quant. Not a hard buffer-size limit
+  (maxStorageBufferRange is 4 GB).
+- llama-cli + RPC offload segfaults at load: upstream bug (not fork-specific);
+  llama-bench and llama-server work. Use server/bench, not cli, with RPC.
+- RPC row-split (-sm row) unsupported: the RPC backend has no split buffers; this
+  is a missing feature (significant to implement), not a regression. Layer-split
+  (-sm layer) is the supported RPC mode.
 - Sparse full-attn (GGML_VK_FA_FULL_WINDOW) is on the sparse-full-attn branch only:
   real speedup (+13% @8k, +52% @32k) but simple selection policies degrade needle
   recall (window 0/3, landmarks 1/3). Not on master; quality-first decision.
@@ -65,4 +77,8 @@ RPC=192.168.1.105:50052 ./scripts/llama250.sh ~/models/MODEL.gguf   # .104
 
 Verdict: master is stable, fast, and quality-correct for the tested single-board
 and gemma4-RPC paths. The drirc unified-heap fix is the key serving-speed win and
-is persistent. Qwen3.5-35B RPC is the one flagged instability to investigate next.
+is persistent. The flagged instabilities (Qwen3.5-35B RPC, ub1024 long-context
+"1GB buffer") were investigated and root-caused to the 15 GB shared-memory ceiling
+(OOM), not code bugs: use a smaller weight quant for >20 GB models over RPC, and
+ub512 / q4_0 KV for long context. The cli+RPC segfault is upstream; RPC row-split
+is a missing feature. No code change warranted for the memory-ceiling cases.
