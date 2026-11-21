@@ -142,6 +142,10 @@ git remote add upstream https://github.com/ggml-org/llama.cpp
 git fetch upstream && git merge upstream/master
 ```
 
+Agents: follow `docs/upstream-merge-guide.md` for every sync - conflict rules,
+auto-merge traps, the ask-user rule for competing upstream changes, and the
+post-sync verification suite with baselines.
+
 ## Status and caveats
 
 - Private fork for BC-250 owners. Not intended for upstream submission; the
