@@ -2901,7 +2901,8 @@ void llama_model::print_info() const {
 }
 
 ggml_backend_dev_t llama_model::dev_layer(int il) const {
-    return pimpl->dev_layer.at(il).dev;
+    // loop slots keep KV/state on the physical weight device, else RPC layer-split corrupts them
+    return pimpl->dev_layer.at(layer_phys(il)).dev;
 }
 
 ggml_backend_dev_t llama_model::dev_output() const {

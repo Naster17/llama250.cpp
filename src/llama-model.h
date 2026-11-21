@@ -1043,6 +1043,8 @@ struct llama_model {
     void print_info() const;
 
     ggml_backend_dev_t dev_layer(int il) const;
+    // cache slot -> physical layer whose weights it reuses (loop models); identity otherwise
+    virtual int layer_phys(int il) const { return il; }
     ggml_backend_dev_t dev_output() const;
 
     ggml_backend_buffer_type_t select_buft(int il) const;
