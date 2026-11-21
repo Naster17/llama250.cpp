@@ -123,6 +123,21 @@ def f32_to_q4_0(x):
     return out.tobytes()
 
 
+def q8_0_deq(raw):
+    b = np.frombuffer(raw, dtype=np.uint8).reshape(-1, 34)
+    d = b[:, :2].copy().view(np.float16).astype(np.float32).reshape(-1)
+    return (b[:, 2:].view(np.int8).astype(np.float32) * d[:, None]).reshape(-1)
+
+
+def q4_0_deq(raw):
+    b = np.frombuffer(raw, dtype=np.uint8).reshape(-1, 18)
+    d = b[:, :2].copy().view(np.float16).astype(np.float32).reshape(-1)
+    out = np.empty((b.shape[0], 32), dtype=np.float32)
+    out[:, :16] = ((b[:, 2:] & 0xF).astype(np.float32) - 8) * d[:, None]
+    out[:, 16:] = ((b[:, 2:] >> 4).astype(np.float32) - 8) * d[:, None]
+    return out.reshape(-1)
+
+
 def main(src, backup):
     f = open(src, "r+b")
     magic, ver, nt, nk = struct.unpack("<4sIQQ", f.read(24))
@@ -187,14 +202,23 @@ def main(src, backup):
         f.seek(s0 + t["off"])
         raw = f.read(t["size"])
         if t["ty"] == 30:
-            new = f32_to_q8_0(bf16_to_f32(raw))
+            x = bf16_to_f32(raw)
+            new = f32_to_q8_0(x)
         elif t["ty"] == 40:
-            new = f32_to_q4_0(nvfp4_to_f32(raw, t["n"]))
+            x = nvfp4_to_f32(raw, t["n"])
+            new = f32_to_q4_0(x)
         else:
+            x = None
             new = raw
         assert len(new) == t["new_size"], (t["name"], len(new), t["new_size"])
         f.seek(s0_new + t["new_off"])
         f.write(new)
+        if x is not None:
+            f.seek(s0_new + t["new_off"])
+            deq = q8_0_deq(f.read(len(new))) if t["ty"] == 30 else q4_0_deq(f.read(len(new)))
+            lim = 0.02 if t["ty"] == 30 else 0.15
+            err = float(np.abs(deq - x).max()) / max(float(np.abs(x).max()), 1e-6)
+            assert err <= lim, (t["name"], err)
     f.seek(0)
     f.write(header)
     f.write(b"\0" * (s0_new - len(header)))

@@ -97,6 +97,34 @@ row-split / remote-weight work.
 - RPC launch of the 17.5 GB file: peer alloc failure (688 MiB expert buffer),
   root cause section 5. Not a code regression.
 
+## 6. Loop-aware tensor split and upstream correctness fixes
+
+The layer-split boundary can be placed BEFORE the loop core so shared weights
+never cross it: with 24 physical layers / 48 slots and core 6..17,
+`-ts 12.5,87.5` gives the peer slots 0..5 (4.0 GB) and the client slots 6..47
+(12.2 GB) at ub64 - both fit. Verified loading and serving with this split.
+
+Upstream merge `c23464b15` (b12608) adds two correctness fixes required here:
+- #32669: generic `<name>.scale` pass - per-expert scales apply to ANY weight
+  type, so requanted Q4_0 experts keep their `.scale` tensors working.
+- #32704: inkling2_loop shares loop slots AFTER the scale pass.
+
+The requantizer now reads back every converted tensor and aborts if the
+dequantized error exceeds 2% (Q8_0) / 15% (Q4_0). The first on-board requant
+pass produced corrupt blocks (inf fp16 scales) despite clean local math; the
+original was re-downloaded from HF and the conversion re-run under the
+verification gate. On-board corruption root cause not yet identified.
+
+Working launch (single board holds the loop core, peer the prefix):
+
+```sh
+GGML_VK_HOST_MALLOC_CACHED=1 GGML_VK_BC250_MMID_TUNE=1 llama-server \
+  -m ~/models/Inkling-2-Mini-UD-Q8_K_XL.gguf --host 0.0.0.0 --port 8080 \
+  -ngl 99 -t 10 -tb 10 -fa on -ctk q8_0 -ctv q8_0 \
+  -c 32768 -b 4096 -ub 64 -lm dio --parallel 1 \
+  --split-mode layer -ts 12.5,87.5 --rpc 192.168.1.105:50052 --jinja
+```
+
 ## Backups on .104
 
 - ~/inkling-header-backup.bin + .json (pre-format-fix header and tensor map)
