@@ -3042,6 +3042,8 @@ ggml_cgraph * llama_context::graph_reserve(
     // Pre-split before reserve: reserve's internal single split over-allocates the
     // compute buffer on RPC backends (OOM at large ctx); pre-splitting avoids it.
     // Local-only graphs split better lazily, so only pre-split when an RPC backend is present.
+    // LLAMA_PRE_SPLIT_DISABLE: split-heavy graphs (inkling2_loop) over-reserve with pre-split; use lazy reserve.
+    static const bool pre_split_disable = getenv("LLAMA_PRE_SPLIT_DISABLE") != nullptr;
     if (!split_only && gf) {
         bool has_rpc = false;
         const int n_backends = ggml_backend_sched_get_n_backends(sched.get());
@@ -3052,7 +3054,7 @@ ggml_cgraph * llama_context::graph_reserve(
                 break;
             }
         }
-        if (has_rpc) {
+        if (has_rpc && !pre_split_disable) {
             ggml_backend_sched_split_graph(sched.get(), gf);
         }
     }
