@@ -69,6 +69,34 @@ and maxturbo40 (2230 MHz) exceeds the VRM envelope. Old .zshrc kept as
 - doas here has no -S; root SSH is denied; `echo PASS | su root -c '...'`
   works for non-interactive root, interactive doas works over `ssh -tt`.
 
+## 5. Structural limit: loop weight sharing vs RPC layer-split
+
+After requant (17.5 GB) the peer still crashed: its model projection was
+15781 MiB (~88% of the whole model) while the client GPU held only embeddings.
+Inkling-2 loop slots 24..47 share the physical weights of layers 6..17, which
+land on the other side of any contiguous layer-split boundary.
+ggml_backend_sched then places the shared weights (and effectively the whole
+graph) on one device, so the peer needs ~15.4 GB + 3.3 GB compute > 15.7 GB.
+Layer-split RPC cannot express "slots co-located with their physical layers";
+row-split RPC is unsupported (no split buffers). Single board cannot hold
+17.5 GB + compute either.
+
+Consequence: this model needs a weight footprint <= ~11.8 GB for single-board
+ub128 + 32k q8_0 KV, or <= ~13.4 GB for ub64 + 16k. The user is downloading a
+smaller quant; the 17.5 GB Q8_0-dense file remains on disk for future RPC
+row-split / remote-weight work.
+
+## Verification (2026-11-21)
+
+- Governor restore on .104: LFM3-1.7B Q8_0 pp512 2499 -> 3243.7, tg128
+  148.3 -> 159.4 (.105 reference 3220 / 159.2).
+- power_minecraft40 proven end-to-end over interactive zsh + doas: config
+  pinned 2000-2100, service restarted.
+- Requant: 370/744 tensors converted (BF16->Q8_0 x330, NVFP4->Q4_0 x40),
+  22867452896 -> 17544798176 bytes, sequential offsets verified.
+- RPC launch of the 17.5 GB file: peer alloc failure (688 MiB expert buffer),
+  root cause section 5. Not a code regression.
+
 ## Backups on .104
 
 - ~/inkling-header-backup.bin + .json (pre-format-fix header and tensor map)
