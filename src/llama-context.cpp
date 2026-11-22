@@ -572,7 +572,17 @@ llama_context::llama_context(
 
         // TODO: move these checks to ggml_backend_sched
         // enabling pipeline parallelism in the scheduler increases memory usage, so it is only done when necessary
+        // pipeline parallelism quadruples split-input copies; not worth it on slow RPC links
+        bool has_rpc = false;
+        for (const auto & backend : backends) {
+            const char * name = ggml_backend_name(backend.get());
+            if (name && strncmp(name, "RPC", 3) == 0) {
+                has_rpc = true;
+                break;
+            }
+        }
         bool pipeline_parallel =
+            !has_rpc &&
             model.n_devices() > 1 &&
             model.n_gpu_layers() > model.hparams.n_layer_all &&
             model.split_mode() == LLAMA_SPLIT_MODE_LAYER &&
