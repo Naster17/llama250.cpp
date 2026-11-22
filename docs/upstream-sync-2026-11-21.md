@@ -181,12 +181,13 @@ IQ3_S single ub512 pp 50.7 / tg 34.5; Q6_K RPC ts25,75 ub256 pp 13.6 / tg 9.6.
 
 ## Changes
 
-- `e0e5b4228` ggml: populate use_counts on split graphs. The manual split
-  assembly left them zero, which silently disabled every use-count-gated
-  backend fusion (ggml_can_fuse_subgraph) on multi-backend local graphs and
-  on the RPC peer (the serializer sends the counts). Measured alone: ~flat
-  on inkling (its patterns mostly do not match the existing fusions), but
-  required for the fusions below and correct in general.
+- `e0e5b4228` ggml: populate use_counts on split graphs - REVERTED by
+  `3d7ec162f` after the guide suite caught a uniform 6-12% regression on
+  ALL models (see below). Kept here for the record: the manual split
+  assembly leaves use_counts zero, which disables use-count-gated backend
+  fusions; populating them is semantically correct but uncalibrated on
+  gfx1013 and cost more than it gave. SiTU/LOOP_GATE are standalone ops and
+  do not depend on it.
 - `5d89be2c0` ggml, vulkan: fused SiTU GLU op (GGML_GLU_OP_SITU). The SiTU
   activation was ~10 elementwise ops per MoE layer over strided gate/up
   views; now one shader reading both views directly (no cont copies).
@@ -195,10 +196,30 @@ IQ3_S single ub512 pp 50.7 / tg 34.5; Q6_K RPC ts25,75 ub256 pp 13.6 / tg 9.6.
   Measured: Q6_K RPC pp 12.7 -> 14.6 (+15%), tg 9.77 -> 10.0; IQ3_S RPC
   ts12.5 pp 15.4 -> 16.2, tg 10.2 -> 10.6; single-board ~flat (pp 51.2,
   tg 29.9 - dispatch overhead is spread over many other small ops).
-- LOOP_GATE op (pending commit): fuses the loop-control gating
-  add(sub(cur, mul(forget,cur)), mul(gain,message)) into one 4-src shader
-  (48 instances/token). GGML_OP_COUNT 102 -> 103, RPC proto patch 3 -> 4,
+- `495db4a4b` ggml, vulkan: fused loop-control gate op (GGML_OP_LOOP_GATE).
+  The gating add(sub(cur, mul(forget,cur)), mul(gain,message)) is one 4-src
+  shader now (48 instances/token). CPU reference + 4 backend-ops cases pass
+  on gfx1013 and Phoenix. GGML_OP_COUNT 102 -> 103, RPC proto patch 3 -> 4,
   both boards rebuilt together.
+
+## Regression hunt (guide suite caught it)
+
+After the perf pass the guide suite showed a uniform drop: LFM3 tg128
+233 -> 215, gemma4 tg128 94 -> 81, pp512 1013 -> 930, server tg 86 -> 76.
+Investigation, in order:
+- Not thermal/governor: 66-69 C under load, config pinned 2000-2100 MHz.
+- Not pattern fusions: GGML_VK_DISABLE_FUSION=1 A/B gave the same slow
+  numbers (fusions on == off).
+- Not graph reuse: realloc counters 0/0, reuse counts normal.
+- Worktree build of d69dc982b (pre-perf-pass) on the same board, same
+  minute: LFM3 3369/229.9, gemma4 995.6/92.2 -> code regression, not drift.
+- Worktree 495db4a4b with e0e5b4228 reverted (SiTU+LOOP_GATE kept):
+  LFM3 3378/230.3, gemma4 988.6/92.0 -> the use_counts population is the
+  trigger. Mechanism not fully isolated (fusion-off did not recover it);
+  the change had zero measured upside on inkling, so it was reverted
+  (3d7ec162f) and both boards clean-rebuilt (--clean-first).
+Lesson: any change that wakes dormant backend fusions needs a per-fusion
+gfx1013 A/B before shipping; the guide suite is what caught this.
 
 ## Remaining levers (not done, documented)
 
