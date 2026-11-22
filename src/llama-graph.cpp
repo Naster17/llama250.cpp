@@ -2604,6 +2604,9 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
                 {
                     // situ(gate, up) = beta*tanh(gate/beta)*sigmoid(gate) * lb*tanh(up/lb)
                     GGML_ASSERT(has_gate);
+                    // gate/up are strided views of the merged gate_up output; Vulkan SCALE needs contiguous inputs
+                    cur = ggml_cont(ctx0, cur);
+                    up  = ggml_cont(ctx0, up);
                     const float beta = hparams.situ_beta;
                     const float lb   = hparams.situ_linear_beta;
 
