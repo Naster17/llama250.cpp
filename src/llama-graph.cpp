@@ -2604,18 +2604,14 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
                 {
                     // situ(gate, up) = beta*tanh(gate/beta)*sigmoid(gate) * lb*tanh(up/lb)
                     GGML_ASSERT(has_gate);
-                    // gate/up are strided views of the merged gate_up output; Vulkan SCALE needs contiguous inputs
-                    cur = ggml_cont(ctx0, cur);
-                    up  = ggml_cont(ctx0, up);
-                    const float beta = hparams.situ_beta;
-                    const float lb   = hparams.situ_linear_beta;
-
-                    ggml_tensor * act = ggml_scale(ctx0, ggml_tanh(ctx0, ggml_scale(ctx0, cur, 1.0f/beta)), beta);
-                    act = ggml_mul(ctx0, act, ggml_sigmoid(ctx0, cur));
-                    if (lb > 0.0f) {
-                        up = ggml_scale(ctx0, ggml_tanh(ctx0, ggml_scale(ctx0, up, 1.0f/lb)), lb);
+                    if (hparams.situ_linear_beta > 0.0f) {
+                        cur = ggml_situ(ctx0, cur, up, hparams.situ_beta, hparams.situ_linear_beta);
+                    } else {
+                        const float beta = hparams.situ_beta;
+                        ggml_tensor * act = ggml_scale(ctx0, ggml_tanh(ctx0, ggml_scale(ctx0, cur, 1.0f/beta)), beta);
+                        act = ggml_mul(ctx0, act, ggml_sigmoid(ctx0, cur));
+                        cur = ggml_mul(ctx0, act, up);
                     }
-                    cur = ggml_mul(ctx0, act, up);
                     cb(cur, "ffn_moe_situ", il);
                 } break;
             case LLM_FFN_GELU:

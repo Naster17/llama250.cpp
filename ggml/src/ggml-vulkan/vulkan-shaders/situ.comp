@@ -1,0 +1,13 @@
+#version 450
+
+#include "glu_head.glsl"
+
+// SiTU (Inkling-2): beta*tanh(a/beta)*sigmoid(a) * lb*tanh(b/lb)
+// beta and lb reuse the swiglu_oai alpha/limit push-constant slots
+float op(float a, float b) {
+    float ga = p.alpha * tanh(a / p.alpha) / (1.0f + exp(-a));
+    float gu = p.limit * tanh(b / p.limit);
+    return ga * gu;
+}
+
+#include "glu_main.glsl"
