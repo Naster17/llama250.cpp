@@ -13713,7 +13713,16 @@ bool ggml_vk_build_graph(ggml_backend_vk_context * ctx, ggml_cgraph * cgraph, in
         // checked against the written list. Two nodes overlap in memory if they come from the same
         // buffer and the tensor or view ranges overlap.
         auto const &overlaps_unsynced = [&](const ggml_tensor *node, const std::vector<const ggml_tensor *> &unsynced_nodes) -> bool {
-            if (unsynced_nodes.size() == 0) {
+            if (unsynced_nodes.size() == 0 || node->buffer == nullptr) {
+                return false;
+            }
+            if ((uintptr_t)node->buffer < 0x10000) {
+                return false;
+            }
+            if ((uintptr_t)node->buffer->buft < 0x10000) {
+                return false;
+            }
+            if (node->buffer->buft->iface.get_name != ggml_backend_vk_buffer_type_name) {
                 return false;
             }
             auto n_base = vk_tensor_offset(node) + node->view_offs;
@@ -13721,6 +13730,12 @@ bool ggml_vk_build_graph(ggml_backend_vk_context * ctx, ggml_cgraph * cgraph, in
             ggml_backend_vk_buffer_context * a_buf_ctx = (ggml_backend_vk_buffer_context *)node->buffer->context;
             vk_buffer a_buf = a_buf_ctx->dev_buffer;
             for (auto &other : unsynced_nodes) {
+                if (other->buffer == nullptr || (uintptr_t)other->buffer < 0x10000) {
+                    continue;
+                }
+                if ((uintptr_t)other->buffer->buft < 0x10000 || other->buffer->buft->iface.get_name != ggml_backend_vk_buffer_type_name) {
+                    continue;
+                }
                 ggml_backend_vk_buffer_context * o_buf_ctx = (ggml_backend_vk_buffer_context *)other->buffer->context;
                 vk_buffer o_buf = o_buf_ctx->dev_buffer;
                 if (a_buf == o_buf) {
@@ -15879,6 +15894,10 @@ static ggml_status ggml_backend_vk_graph_compute(ggml_backend_t backend, ggml_cg
     ctx->prealloc_size_add_rms_partials_offset = 0;
     ctx->do_add_rms_partials = false;
     ctx->do_add_rms_partials_offset_calculation = false;
+
+    // stale tensor pointers from a previous graph (freed/reused cgraph) must not be dereferenced
+    ctx->unsynced_nodes_written.clear();
+    ctx->unsynced_nodes_read.clear();
 
     int last_node = cgraph->n_nodes - 1;
 
