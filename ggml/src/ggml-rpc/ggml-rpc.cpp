@@ -3390,6 +3390,9 @@ static bool ggml_backend_rpc_device_supports_op(ggml_backend_dev_t dev, const st
     rpc_msg_supports_op_rsp response;
     dispatcher->send(RPC_CMD_SUPPORTS_OP, request, sizeof(*request), nullptr, 0, &response, sizeof(response));
     const bool result = response.result != 0;
+    LOG_DBG2("[%s] op: %s, src0 type: %s, ne0: %lld, result: %d\n", __func__, ggml_op_name(op->op),
+             op->src[0] ? ggml_type_name(op->src[0]->type) : "none",
+             op->src[0] ? (long long)op->src[0]->ne[0] : 0, (int)result);
     {
         std::lock_guard<std::mutex> lock(cache_mutex);
         cache[key] = result;
