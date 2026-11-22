@@ -1,0 +1,38 @@
+#version 450
+
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+
+layout (binding = 0) readonly  buffer T { float data_t[]; }; // table   [n_table, n_head, n_tokens]
+layout (binding = 1) readonly  buffer S { float data_s[]; }; // sinks   [n_head, n_tokens]
+layout (binding = 2) readonly  buffer R { int   data_r[]; }; // rel_pos [n_kv, n_tokens]
+layout (binding = 3) writeonly buffer D { float data_d[]; }; // kq_b    [n_kv, n_tok_s, n_head, n_stream]
+
+layout (push_constant) uniform parameter {
+    uint n_table;
+    uint n_head;
+    uint n_kv;
+    uint n_tok_s;
+    uint n_tokens;
+    uint t_offset;
+    uint s_offset;
+    uint r_offset;
+    uint d_offset;
+} p;
+
+void main() {
+    const uint kv  = gl_GlobalInvocationID.x;
+    const uint h   = gl_WorkGroupID.y;
+    const uint tok = gl_WorkGroupID.z;
+
+    if (kv >= p.n_kv || h >= p.n_head || tok >= p.n_tokens) {
+        return;
+    }
+
+    const int  dist = data_r[p.r_offset + tok * p.n_kv + kv];
+    const float val = data_t[p.t_offset + (tok * p.n_head + h) * p.n_table + uint(dist)];
+    const float sk  = data_s[p.s_offset + tok * p.n_head + h];
+
+    const uint st = tok / p.n_tok_s;
+    const uint ts = tok - st * p.n_tok_s;
+    data_d[p.d_offset + ((st * p.n_head + h) * p.n_tok_s + ts) * p.n_kv + kv] = val - sk;
+}

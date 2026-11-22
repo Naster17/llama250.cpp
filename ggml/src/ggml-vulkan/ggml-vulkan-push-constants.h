@@ -834,6 +834,37 @@ struct vk_op_loop_gate_push_constants {
     uint32_t n_d; uint32_t n_tok; uint32_t n_str;
 };
 
+struct vk_op_inkling_clip_push_constants {
+    uint32_t ne00;
+    uint32_t nrows;
+    float    threshold;
+    float    eps;
+    uint32_t a_offset;
+    uint32_t d_offset;
+};
+
+struct vk_op_inkling_mix_weighted_push_constants {
+    uint32_t n_embd;
+    uint32_t n_states;
+    uint32_t n_q;
+    uint32_t n_tokens;
+    uint32_t a_offset;
+    uint32_t b_offset;
+    uint32_t d_offset;
+};
+
+struct vk_op_inkling_rel_bias_push_constants {
+    uint32_t n_table;
+    uint32_t n_head;
+    uint32_t n_kv;
+    uint32_t n_tok_s;
+    uint32_t n_tokens;
+    uint32_t t_offset;
+    uint32_t s_offset;
+    uint32_t r_offset;
+    uint32_t d_offset;
+};
+
 struct vk_op_conv2d_push_constants {
     uint32_t Cout;
     uint32_t Cin;

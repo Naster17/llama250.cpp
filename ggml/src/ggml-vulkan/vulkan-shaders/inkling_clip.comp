@@ -1,0 +1,52 @@
+#version 450
+
+#extension GL_EXT_control_flow_attributes : enable
+
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+layout (binding = 0) readonly  buffer A { float data_a[]; };
+layout (binding = 1) writeonly buffer D { float data_d[]; };
+
+layout (push_constant) uniform parameter {
+    uint  ne00;
+    uint  nrows;
+    float threshold;
+    float eps;
+    uint  a_offset;
+    uint  d_offset;
+} p;
+
+shared float ssum[64];
+
+void main() {
+    const uint row = gl_WorkGroupID.z * 262144 + gl_WorkGroupID.y * 512 + gl_WorkGroupID.x;
+    const uint tid = gl_LocalInvocationID.x;
+
+    if (row >= p.nrows) {
+        return;
+    }
+
+    const uint a_base = p.a_offset + row * p.ne00;
+    const uint d_base = p.d_offset + row * p.ne00;
+
+    float acc = 0.0f;
+    for (uint i = tid; i < p.ne00; i += 64) {
+        float x = data_a[a_base + i];
+        acc += x * x;
+    }
+    ssum[tid] = acc;
+    barrier();
+
+    [[unroll]] for (uint s = 32; s > 0; s >>= 1) {
+        if (tid < s) {
+            ssum[tid] += ssum[tid + s];
+        }
+        barrier();
+    }
+
+    const float factor = clamp(p.threshold / (sqrt(ssum[0]) + p.eps), 0.0f, 1.0f);
+
+    for (uint i = tid; i < p.ne00; i += 64) {
+        data_d[d_base + i] = data_a[a_base + i] * factor;
+    }
+}

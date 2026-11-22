@@ -4373,6 +4373,9 @@ void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested) {
     ggml_vk_create_pipeline(device, device->pipeline_mhc_route_f32, "mhc_route_f32", mhc_route_f32_len, mhc_route_f32_data, "main", 5, sizeof(vk_op_mhc_route_push_constants), {256, 1, 1}, {}, 1);
     ggml_vk_create_pipeline(device, device->pipeline_mhc_merge_f32, "mhc_merge_f32", mhc_merge_f32_len, mhc_merge_f32_data, "main", 5, sizeof(vk_op_mhc_merge_push_constants), {256, 1, 1}, {}, 1);
     ggml_vk_create_pipeline(device, device->pipeline_loop_gate_f32, "loop_gate_f32", loop_gate_f32_len, loop_gate_f32_data, "main", 5, sizeof(vk_op_loop_gate_push_constants), {256, 1, 1}, {}, 1);
+    ggml_vk_create_pipeline(device, device->pipeline_inkling_clip_f32,       "inkling_clip_f32",       inkling_clip_f32_len, inkling_clip_f32_data, "main", 2, sizeof(vk_op_inkling_clip_push_constants), {1, 1, 1}, {}, 1);
+    ggml_vk_create_pipeline(device, device->pipeline_inkling_mix_weighted_f32,"inkling_mix_weighted_f32",inkling_mix_weighted_f32_len, inkling_mix_weighted_f32_data, "main", 3, sizeof(vk_op_inkling_mix_weighted_push_constants), {256, 1, 1}, {}, 1);
+    ggml_vk_create_pipeline(device, device->pipeline_inkling_rel_bias_f32,   "inkling_rel_bias_f32",   inkling_rel_bias_f32_len, inkling_rel_bias_f32_data, "main", 4, sizeof(vk_op_inkling_rel_bias_push_constants), {256, 1, 1}, {}, 1);
 
     ggml_vk_create_pipeline(device, device->pipeline_opt_step_adamw_f32, "opt_step_adamw_f32", opt_step_adamw_f32_len, opt_step_adamw_f32_data, "main", 5, sizeof(vk_op_push_constants), {512, 1, 1}, {}, 1);
 
@@ -11693,6 +11696,105 @@ void ggml_vk_loop_gate(ggml_backend_vk_context * ctx, vk_context& subctx, const 
     ggml_vk_dispatch_pipeline(ctx, subctx, pipeline, { c_buf, f_buf, g_buf, m_buf, d_buf }, pc, { (uint32_t) cur->ne[0], (uint32_t) cur->ne[1], (uint32_t) cur->ne[2] });
 }
 
+static void ggml_vk_inkling_clip(ggml_backend_vk_context * ctx, vk_context& subctx, const struct ggml_cgraph * cgraph, int node_idx) {
+    const ggml_tensor * n_sqr   = cgraph->nodes[node_idx];
+    const ggml_tensor * n_scale = cgraph->nodes[node_idx + 3];
+    const ggml_tensor * n_fill  = cgraph->nodes[node_idx + 4];
+    ggml_tensor * dst           = cgraph->nodes[node_idx + 7];
+    const ggml_tensor * cur     = n_sqr->src[0];
+
+    vk_pipeline pipeline = ctx->device->pipeline_inkling_clip_f32;
+    GGML_ASSERT(pipeline != nullptr);
+
+    const uint32_t ne00  = (uint32_t) cur->ne[0];
+    const uint32_t nrows = (uint32_t) ggml_nrows(cur);
+    const float eps       = ggml_get_op_params_f32(n_scale, 1);
+    const float threshold = ggml_get_op_params_f32(n_fill,  0);
+
+    ggml_pipeline_request_descriptor_sets(ctx, pipeline, 1);
+
+    const vk_subbuffer a_buf = ggml_vk_tensor_subbuffer(ctx, cur, true);
+    const vk_subbuffer d_buf = ggml_vk_tensor_subbuffer(ctx, dst, true);
+
+    const uint32_t a_off = get_misalign_bytes(ctx, cur) / sizeof(float);
+    const uint32_t d_off = get_misalign_bytes(ctx, dst) / sizeof(float);
+
+    vk_op_inkling_clip_push_constants pc = { ne00, nrows, threshold, eps, a_off, d_off };
+
+    const uint32_t gx = nrows <= 512 ? nrows : 512;
+    const uint32_t gy = nrows <= 512 ? 1 : std::min<uint32_t>((nrows + 511) / 512, 512);
+    const uint32_t gz = (nrows + 262143) / 262144;
+    ggml_vk_dispatch_pipeline(ctx, subctx, pipeline, { a_buf, d_buf }, pc, { gx, gy, gz });
+}
+
+static void ggml_vk_inkling_mix_weighted(ggml_backend_vk_context * ctx, vk_context& subctx, const struct ggml_cgraph * cgraph, int node_idx) {
+    // node_idx+0: CONT(transpose(states)), +1: MUL_MAT scores raw, +2: SOFT_MAX, +3: MUL_MAT output
+    const ggml_tensor * n_cont  = cgraph->nodes[node_idx + 0];
+    ggml_tensor * dst           = cgraph->nodes[node_idx + 3];
+    const ggml_tensor * states  = n_cont->src[0]->src[0];
+    const ggml_tensor * scores  = dst->src[1];
+
+    vk_pipeline pipeline = ctx->device->pipeline_inkling_mix_weighted_f32;
+    GGML_ASSERT(pipeline != nullptr);
+
+    const uint32_t n_embd   = (uint32_t) states->ne[0];
+    const uint32_t n_states = (uint32_t) states->ne[1];
+    const uint32_t n_q      = (uint32_t) scores->ne[1];
+    const uint32_t n_tokens = (uint32_t) states->ne[2];
+
+    ggml_pipeline_request_descriptor_sets(ctx, pipeline, 1);
+
+    const vk_subbuffer a_buf = ggml_vk_tensor_subbuffer(ctx, states, true);
+    const vk_subbuffer b_buf = ggml_vk_tensor_subbuffer(ctx, scores, true);
+    const vk_subbuffer d_buf = ggml_vk_tensor_subbuffer(ctx, dst,    true);
+
+    vk_op_inkling_mix_weighted_push_constants pc = {
+        n_embd, n_states, n_q, n_tokens,
+        get_misalign_bytes(ctx, states) / (uint32_t)sizeof(float),
+        get_misalign_bytes(ctx, scores) / (uint32_t)sizeof(float),
+        get_misalign_bytes(ctx, dst)    / (uint32_t)sizeof(float),
+    };
+
+    ggml_vk_dispatch_pipeline(ctx, subctx, pipeline, { a_buf, b_buf, d_buf }, pc, { n_embd, n_q, n_tokens });
+}
+
+static void ggml_vk_inkling_rel_bias(ggml_backend_vk_context * ctx, vk_context& subctx, const struct ggml_cgraph * cgraph, int node_idx) {
+    const ggml_tensor * n_sub  = cgraph->nodes[node_idx + 0];
+    const ggml_tensor * n_get  = cgraph->nodes[node_idx + 3];
+    const ggml_tensor * n6     = cgraph->nodes[node_idx + 6];
+    ggml_tensor * dst          = (n6->op == GGML_OP_VIEW) ? cgraph->nodes[node_idx + 7] : cgraph->nodes[node_idx + 6];
+
+    const ggml_tensor * table    = n_sub->src[0];
+    const ggml_tensor * sinks_3d = n_sub->src[1];
+    const ggml_tensor * rel_pos  = n_get->src[1];
+
+    vk_pipeline pipeline = ctx->device->pipeline_inkling_rel_bias_f32;
+    GGML_ASSERT(pipeline != nullptr);
+
+    const uint32_t n_table  = (uint32_t) table->ne[0];
+    const uint32_t n_head   = (uint32_t) table->ne[1];
+    const uint32_t n_tokens = (uint32_t) table->ne[2];
+    const uint32_t n_kv     = (uint32_t) rel_pos->ne[0];
+    const uint32_t n_tok_s  = (uint32_t) dst->ne[1];
+
+    ggml_pipeline_request_descriptor_sets(ctx, pipeline, 1);
+
+    const vk_subbuffer t_buf = ggml_vk_tensor_subbuffer(ctx, table,    true);
+    const vk_subbuffer s_buf = ggml_vk_tensor_subbuffer(ctx, sinks_3d, true);
+    const vk_subbuffer r_buf = ggml_vk_tensor_subbuffer(ctx, rel_pos,  true);
+    const vk_subbuffer d_buf = ggml_vk_tensor_subbuffer(ctx, dst,      true);
+
+    vk_op_inkling_rel_bias_push_constants pc = {
+        n_table, n_head, n_kv, n_tok_s, n_tokens,
+        get_misalign_bytes(ctx, table)    / (uint32_t)sizeof(float),
+        get_misalign_bytes(ctx, sinks_3d) / (uint32_t)sizeof(float),
+        get_misalign_bytes(ctx, rel_pos)  / (uint32_t)sizeof(int32_t),
+        get_misalign_bytes(ctx, dst)      / (uint32_t)sizeof(float),
+    };
+
+    ggml_vk_dispatch_pipeline(ctx, subctx, pipeline, { t_buf, s_buf, r_buf, d_buf }, pc, { n_kv, n_head, n_tokens });
+}
+
 void ggml_vk_ssm_conv(ggml_backend_vk_context * ctx, vk_context& subctx, const struct ggml_cgraph * cgraph, int node_idx) {
     ggml_tensor * conv = cgraph->nodes[node_idx];
     const ggml_tensor * src0 = conv->src[0];
@@ -13740,7 +13842,11 @@ bool ggml_vk_build_graph(ggml_backend_vk_context * ctx, ggml_cgraph * cgraph, in
         ggml_vk_out_prod(ctx, compute_ctx, src0, src1, node);
         break;
     case GGML_OP_SUB:
-        ggml_vk_sub(ctx, compute_ctx, src0, src1, node);
+        if (ctx->fused_inkling_rel_bias) {
+            ggml_vk_inkling_rel_bias(ctx, compute_ctx, cgraph, node_idx);
+        } else {
+            ggml_vk_sub(ctx, compute_ctx, src0, src1, node);
+        }
 
         break;
     case GGML_OP_MUL:
@@ -13789,7 +13895,11 @@ bool ggml_vk_build_graph(ggml_backend_vk_context * ctx, ggml_cgraph * cgraph, in
 
         break;
     case GGML_OP_SQR:
-        ggml_vk_sqr(ctx, compute_ctx, src0, node);
+        if (ctx->fused_inkling_clip) {
+            ggml_vk_inkling_clip(ctx, compute_ctx, cgraph, node_idx);
+        } else {
+            ggml_vk_sqr(ctx, compute_ctx, src0, node);
+        }
 
         break;
     case GGML_OP_SQRT:
@@ -13835,7 +13945,11 @@ bool ggml_vk_build_graph(ggml_backend_vk_context * ctx, ggml_cgraph * cgraph, in
     case GGML_OP_CPY:
     case GGML_OP_CONT:
     case GGML_OP_DUP:
-        ggml_vk_cpy(ctx, compute_ctx, src0, node);
+        if (ctx->fused_inkling_mix_weighted) {
+            ggml_vk_inkling_mix_weighted(ctx, compute_ctx, cgraph, node_idx);
+        } else {
+            ggml_vk_cpy(ctx, compute_ctx, src0, node);
+        }
 
         break;
     case GGML_OP_SET_ROWS:
@@ -14482,7 +14596,9 @@ bool ggml_backend_vk_buffer_cpy_tensor_n(ggml_backend_buffer_t buffer, const ggm
 void ggml_backend_vk_buffer_clear(ggml_backend_buffer_t buffer, uint8_t value) {
     ggml_backend_vk_buffer_context * ctx = (ggml_backend_vk_buffer_context *)buffer->context;
 
-    ggml_vk_buffer_memset(ctx->dev_buffer, 0, value, buffer->size);
+    // set all bytes of a u32 to the same 1 byte value
+    uint32_t val32 = (uint32_t)value * 0x01010101;
+    ggml_vk_buffer_memset(ctx->dev_buffer, 0, val32, buffer->size);
 }
 
 const char * ggml_backend_vk_buffer_type_name(ggml_backend_buffer_type_t buft) {
@@ -14947,6 +15063,98 @@ static bool ggml_vk_can_fuse_hc_post_gate(const struct ggml_cgraph * cgraph, int
            ggml_get_op_params_f32(scale_out, 1) == 0.0f &&
            scale_in->src[0]->type == GGML_TYPE_F32 &&
            ggml_are_same_shape(scale_in->src[0], scale_out);
+}
+
+static bool ggml_vk_can_fuse_inkling_clip(const struct ggml_cgraph * cgraph, int node_idx) {
+    const ggml_tensor * n0 = cgraph->nodes[node_idx + 0];
+    const ggml_tensor * n1 = cgraph->nodes[node_idx + 1];
+    const ggml_tensor * n2 = cgraph->nodes[node_idx + 2];
+    const ggml_tensor * n3 = cgraph->nodes[node_idx + 3];
+    const ggml_tensor * n4 = cgraph->nodes[node_idx + 4];
+    const ggml_tensor * n5 = cgraph->nodes[node_idx + 5];
+    const ggml_tensor * n6 = cgraph->nodes[node_idx + 6];
+    const ggml_tensor * n7 = cgraph->nodes[node_idx + 7];
+    const ggml_tensor * cur = n0->src[0];
+    if (n0->op != GGML_OP_SQR || n1->op != GGML_OP_SUM_ROWS || n2->op != GGML_OP_SQRT || n3->op != GGML_OP_SCALE ||
+        n4->op != GGML_OP_FILL || n5->op != GGML_OP_DIV || n6->op != GGML_OP_CLAMP || n7->op != GGML_OP_MUL) {
+        return false;
+    }
+    if (cur == nullptr || cur->type != GGML_TYPE_F32 || n7->type != GGML_TYPE_F32) return false;
+    if (!ggml_is_contiguous(cur) || !ggml_is_contiguous(n7)) return false;
+    bool ok = n1->src[0] == n0 && n2->src[0] == n1 && n3->src[0] == n2 && n4->src[0] == n3 && n5->src[0] == n4 &&
+           n5->src[1] == n3 && n6->src[0] == n5 && n7->src[0] == cur && n7->src[1] == n6 &&
+           ggml_get_op_params_f32(n3, 0) == 1.0f && ggml_get_op_params_f32(n6, 0) == 0.0f && ggml_get_op_params_f32(n6, 1) == 1.0f &&
+           ggml_are_same_shape(cur, n7);
+    return ok;
+}
+
+static bool ggml_vk_can_fuse_inkling_mix_weighted(const struct ggml_cgraph * cgraph, int node_idx) {
+    // Pattern: CONT(transpose(states)) [0], MUL_MAT(states, queries)=scores_raw [1],
+    //          SOFT_MAX(scores_raw) [2], MUL_MAT(states_t, scores) [3]
+    const ggml_tensor * n0 = cgraph->nodes[node_idx + 0];
+    const ggml_tensor * n1 = cgraph->nodes[node_idx + 1];
+    const ggml_tensor * n2 = cgraph->nodes[node_idx + 2];
+    const ggml_tensor * n3 = cgraph->nodes[node_idx + 3];
+    if (n0->op != GGML_OP_CONT || n1->op != GGML_OP_MUL_MAT || n2->op != GGML_OP_SOFT_MAX || n3->op != GGML_OP_MUL_MAT) return false;
+    if (n3->src[0] != n0) return false;
+    if (n2->src[0] != n1) return false;
+    if (n3->src[1] != n2) return false;
+    const ggml_tensor * tr = n0->src[0];
+    if (tr == nullptr || (tr->op != GGML_OP_PERMUTE && tr->op != GGML_OP_TRANSPOSE)) return false;
+    const ggml_tensor * states = tr->src[0];
+    const ggml_tensor * scores = n3->src[1];
+    if (states == nullptr || scores == nullptr) return false;
+    bool ok = states->type == GGML_TYPE_F32 && scores->type == GGML_TYPE_F32 && n3->type == GGML_TYPE_F32 &&
+           ggml_is_contiguous(states) && ggml_is_contiguous(scores) && ggml_is_contiguous(n3) &&
+           states->ne[0] == n3->ne[0] && scores->ne[1] == n3->ne[1] &&
+           states->ne[2] == n3->ne[2] && states->ne[3] == 1 &&
+           scores->ne[0] == states->ne[1] && scores->ne[2] == n3->ne[2] &&
+           scores->ne[3] == 1 && n3->ne[3] == 1 &&
+           states->ne[1] <= 16;
+    return ok;
+}
+
+static bool ggml_vk_can_fuse_inkling_rel_bias(const struct ggml_cgraph * cgraph, int node_idx) {
+    // Pattern: SUB, PERMUTE, CONT, GET_ROWS, RESHAPE, PERMUTE, [VIEW,] CONT
+    const ggml_tensor * n0 = cgraph->nodes[node_idx + 0];
+    const ggml_tensor * n1 = cgraph->nodes[node_idx + 1];
+    const ggml_tensor * n2 = cgraph->nodes[node_idx + 2];
+    const ggml_tensor * n3 = cgraph->nodes[node_idx + 3];
+    const ggml_tensor * n4 = cgraph->nodes[node_idx + 4];
+    const ggml_tensor * n5 = cgraph->nodes[node_idx + 5];
+    const ggml_tensor * n6 = cgraph->nodes[node_idx + 6];
+    const ggml_tensor * n7 = cgraph->nodes[node_idx + 7];
+    bool has_view = n6->op == GGML_OP_VIEW && n7->op == GGML_OP_CONT;
+    bool no_view  = n6->op == GGML_OP_CONT;
+    if (n0->op != GGML_OP_SUB || n1->op != GGML_OP_PERMUTE || n2->op != GGML_OP_CONT ||
+        n3->op != GGML_OP_GET_ROWS || n4->op != GGML_OP_RESHAPE || n5->op != GGML_OP_PERMUTE) {
+        return false;
+    }
+    if (!has_view && !no_view) { fprintf(stderr,"RELB-NO view=%d n6=%s n7=%s\n",0,ggml_op_name(n6->op),ggml_op_name(n7->op)); return false; }
+    const ggml_tensor * out = has_view ? n7 : n6;
+    const ggml_tensor * table    = n0->src[0];
+    const ggml_tensor * sinks_3d = n0->src[1];
+    const ggml_tensor * rel_pos  = n3->src[1];
+    if (table == nullptr || sinks_3d == nullptr || rel_pos == nullptr) return false;
+    bool c1=n1->src[0]==n0,c2=n2->src[0]==n1,c3=n3->src[0]==n2,c4=n4->src[0]==n3,c5=n5->src[0]==n4;
+    bool c6=has_view?((n6->src[0]==n5)||(n6->view_src==n5)||true):(n6->src[0]==n5);
+    bool c7=has_view?(n7->src[0]==n5 || n7->src[0]==n6):true;
+    bool chain=c1&&c2&&c3&&c4&&c5&&c6&&c7;
+    bool ok = chain &&
+           table->type == GGML_TYPE_F32 && sinks_3d->type == GGML_TYPE_F32 &&
+           rel_pos->type == GGML_TYPE_I32 && out->type == GGML_TYPE_F32 &&
+           ggml_is_contiguous(table) && ggml_is_contiguous(sinks_3d) &&
+           ggml_is_contiguous(rel_pos) && ggml_is_contiguous(out) &&
+           table->ne[3] == 1 && sinks_3d->ne[0] == 1 &&
+           sinks_3d->ne[1] == table->ne[1] && sinks_3d->ne[2] == table->ne[2] && sinks_3d->ne[3] == 1 &&
+           n1->ne[0] == table->ne[1] && n1->ne[1] == table->ne[0] && n1->ne[2] == table->ne[2] &&
+           rel_pos->ne[1] == table->ne[2] && rel_pos->ne[2] == 1 && rel_pos->ne[3] == 1 &&
+           n4->ne[0] == table->ne[1] && n4->ne[1] == rel_pos->ne[0] &&
+           n4->ne[2] * n4->ne[3] == table->ne[2] &&
+           out->ne[0] == rel_pos->ne[0] && out->ne[1] == n4->ne[2] &&
+           out->ne[2] == table->ne[1] && out->ne[3] == n4->ne[3];
+
+    return ok;
 }
 
 bool ggml_vk_can_fuse(const ggml_backend_vk_context * ctx, const struct ggml_cgraph * cgraph, int node_idx, std::initializer_list<enum ggml_op> ops) {
@@ -15811,12 +16019,16 @@ static ggml_status ggml_backend_vk_graph_compute(ggml_backend_t backend, ggml_cg
         // The array is sized to handle the largest fusion (asserted later).
         bool op_srcs_fused_elementwise[13];
 
+
         ctx->fused_topk_moe_mode = TOPK_MOE_COUNT;
         ctx->fused_topk_moe_scale = false;
         ctx->fused_topk_qsa = false;
         ctx->fused_hc_post_gate = false;
+        ctx->fused_inkling_clip = false;
+        ctx->fused_inkling_mix_weighted = false;
+        ctx->fused_inkling_rel_bias = false;
         ctx->fused_rms_norm_mode = RMS_NORM_COUNT;
-        const char *fusion_string {};
+        const char *fusion_string = nullptr;
         if (!ctx->device->disable_fusion) {
             uint32_t num_adds = ggml_vk_fuse_multi_add(ctx, cgraph, i);
             if (num_adds) {
@@ -15878,6 +16090,35 @@ static ggml_status ggml_backend_vk_graph_compute(ggml_backend_t backend, ggml_cg
                 ctx->fused_hc_post_gate = true;
                 fusion_string = "HC_POST_GATE";
                 std::fill_n(op_srcs_fused_elementwise, ctx->num_additional_fused_ops + 1, false);
+            } else if (ggml_can_fuse_subgraph(cgraph, i, { GGML_OP_SQR, GGML_OP_SUM_ROWS, GGML_OP_SQRT, GGML_OP_SCALE, GGML_OP_FILL, GGML_OP_DIV, GGML_OP_CLAMP, GGML_OP_MUL }, { i + 7 })) {
+                bool cc = ggml_vk_can_fuse_inkling_clip(cgraph, i);
+                fprintf(stderr,"CLIP-DET i=%d cc=%d\n", i, (int)cc);
+                if (cc) {
+                ctx->num_additional_fused_ops = 7;
+                ctx->fused_inkling_clip = true;
+                fusion_string = "INKLING_CLIP";
+                std::fill_n(op_srcs_fused_elementwise, 8, true);
+                }
+            } else if (ggml_can_fuse_subgraph(cgraph, i, { GGML_OP_CONT, GGML_OP_MUL_MAT, GGML_OP_SOFT_MAX, GGML_OP_MUL_MAT }, { i + 3 }) &&
+                       ggml_vk_can_fuse_inkling_mix_weighted(cgraph, i)) {
+                ctx->num_additional_fused_ops = 3;
+                ctx->fused_inkling_mix_weighted = true;
+                fusion_string = "INKLING_MIX_WEIGHTED";
+                std::fill_n(op_srcs_fused_elementwise, 4, false);
+            } else if (ggml_can_fuse_subgraph(cgraph, i, { GGML_OP_SUB, GGML_OP_PERMUTE, GGML_OP_CONT, GGML_OP_GET_ROWS, GGML_OP_RESHAPE, GGML_OP_PERMUTE, GGML_OP_VIEW, GGML_OP_CONT }, { i + 7 })) {
+                fprintf(stderr,"RELB-MATCH8 i=%d\n",i);
+                if (ggml_vk_can_fuse_inkling_rel_bias(cgraph, i)) {
+                ctx->num_additional_fused_ops = 7;
+                ctx->fused_inkling_rel_bias = true;
+                fusion_string = "INKLING_REL_BIAS";
+                std::fill_n(op_srcs_fused_elementwise, 8, false);
+                }
+            } else if (ggml_can_fuse_subgraph(cgraph, i, { GGML_OP_SUB, GGML_OP_PERMUTE, GGML_OP_CONT, GGML_OP_GET_ROWS, GGML_OP_RESHAPE, GGML_OP_PERMUTE, GGML_OP_CONT }, { i + 6 }) &&
+                       ggml_vk_can_fuse_inkling_rel_bias(cgraph, i)) {
+                ctx->num_additional_fused_ops = 6;
+                ctx->fused_inkling_rel_bias = true;
+                fusion_string = "INKLING_REL_BIAS";
+                std::fill_n(op_srcs_fused_elementwise, 7, false);
             } else if (ggml_vk_can_fuse(ctx, cgraph, i, rms_norm_mul_add_mul_pattern)) {
                 ctx->num_additional_fused_ops = 3;
                 ctx->fused_rms_norm_mode = RMS_NORM_MUL_ADD_MUL;
@@ -17254,7 +17495,7 @@ static bool ggml_backend_vk_device_supports_op(ggml_backend_dev_t dev, const ggm
         case GGML_OP_SLEEP:
             return device->shader_clock;
         case GGML_OP_SCALE:
-            return ggml_is_contiguous(op->src[0]) && ggml_vk_is_float_elementwise(op);
+            return ggml_vk_is_float_elementwise(op);
         case GGML_OP_PAD:
         case GGML_OP_PAD_REFLECT_1D:
         case GGML_OP_ROLL:

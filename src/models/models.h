@@ -2519,6 +2519,8 @@ struct llama_model_inkling2 : public llama_model_base {
 
     struct graph : public llm_graph_context {
         graph(const llm_graph_params & params);
+        ggml_tensor * mix_states(ggml_tensor * states, ggml_tensor * states_t, ggml_tensor * query);
+        ggml_tensor * mix_cached(ggml_tensor * blocks_normed, ggml_tensor * cur, ggml_tensor * query);
         ggml_tensor * mix(const std::vector<ggml_tensor *> & blocks, ggml_tensor * cur, ggml_tensor * query);
         ggml_tensor * clip(ggml_tensor * cur, ggml_tensor * scale, float threshold);
         ggml_tensor * convolve(
@@ -2955,7 +2957,7 @@ struct llama_model_clef : public llama_model_qwen35 {
                  input_decision * inp);
 
         ggml_tensor * build_head_norm(ggml_tensor * cur, const norm & n);
-        ggml_tensor * build_head_attn(ggml_tensor * q, ggml_tensor * kv, const attn & a);
+        ggml_tensor * build_head_attn(ggml_tensor * q, ggml_tensor * kv, const attn & a, ggml_tensor * kq_mask = nullptr);
         ggml_tensor * build_head_ffn (ggml_tensor * cur, const head_layer & layer);
 
         const llama_model_clef & model;

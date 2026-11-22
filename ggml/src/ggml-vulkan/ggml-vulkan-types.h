@@ -1029,6 +1029,9 @@ struct vk_device_struct {
     vk_pipeline pipeline_mhc_route_f32;
     vk_pipeline pipeline_mhc_merge_f32;
     vk_pipeline pipeline_loop_gate_f32;
+    vk_pipeline pipeline_inkling_clip_f32;
+    vk_pipeline pipeline_inkling_mix_weighted_f32;
+    vk_pipeline pipeline_inkling_rel_bias_f32;
     vk_pipeline pipeline_opt_step_adamw_f32;
     vk_pipeline pipeline_opt_step_sgd_f32;
     std::map<vk_conv2d_pipeline_state, vk_pipeline> pipeline_conv2d_f32[CONV_SHAPE_COUNT];
@@ -1373,6 +1376,9 @@ struct ggml_backend_vk_context {
     // QSA indexer gather+add+top_k fused into one radix-select
     bool fused_topk_qsa {};
     bool fused_hc_post_gate {};
+    bool fused_inkling_clip {};
+    bool fused_inkling_mix_weighted {};
+    bool fused_inkling_rel_bias {};
     rms_norm_mode fused_rms_norm_mode {RMS_NORM_COUNT};
 
     // for GGML_VK_PERF_LOGGER
