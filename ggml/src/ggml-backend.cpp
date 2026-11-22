@@ -2027,6 +2027,25 @@ void ggml_backend_sched_split_graph(ggml_backend_sched_t sched, struct ggml_cgra
     for (int i = 0; i < sched->n_splits; ++i) {
         sched->splits[i].graph.uid = ggml_graph_next_uid();
     }
+
+    // populate use_counts for the split graphs: backend op fusions and the RPC
+    // serializer need them, and the manual assembly above leaves them zero
+    for (int i = 0; i < sched->n_splits; ++i) {
+        struct ggml_cgraph * graph_copy = &sched->splits[i].graph;
+        ggml_hash_set_reset(&graph_copy->visited_hash_set);
+        memset(graph_copy->use_counts, 0, graph_copy->visited_hash_set.size * sizeof(int32_t));
+        for (int j = 0; j < graph_copy->n_nodes; j++) {
+            struct ggml_tensor * node = graph_copy->nodes[j];
+            ggml_hash_insert(&graph_copy->visited_hash_set, node);
+            for (int k = 0; k < GGML_MAX_SRC; k++) {
+                struct ggml_tensor * src = node->src[k];
+                if (src) {
+                    size_t src_pos = ggml_hash_insert(&graph_copy->visited_hash_set, src);
+                    graph_copy->use_counts[src_pos]++;
+                }
+            }
+        }
+    }
 }
 
 static bool ggml_backend_sched_alloc_splits(ggml_backend_sched_t sched) {
