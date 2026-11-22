@@ -63,3 +63,110 @@ Server greedy quality: "Capital of France is Paris." - correct.
 Unchanged from release-verification-2026-11-20: the 15 GB shared-memory ceiling
 (Qwen3.5-35B Q5 over RPC, ub1024 at >=32k context) is hardware, not code; use Q4
 weight quants over RPC and ub512 / q4_0 KV for long context.
+
+---
+
+# Evening sync (b12614) + Inkling-2 RPC correctness/perf fixes
+
+Merge: origin/master b12614, 2 commits (afe77e18f chat reasoning_effort=none
+#32763, e6d624b9a mtmd Parakeet rel-pos OOB #32722). Zero conflicts; no fork
+delta touched. Guide tests pass: MHC_ROUTE/MHC_MERGE 18/18, test-llama-archs
+sensenova_loop OK. Both boards rebuilt from the same commit chain.
+
+## New commits
+
+- `107b9249a` llama: `LLAMA_PRE_SPLIT_DISABLE` gate. Pre-split before reserve
+  over-reserves compute on split-heavy graphs (inkling2_loop: 433 splits,
+  11.6 GiB compute projection vs 1.8 GiB lazy); the peer was OOM-killed during
+  reserve. Gate skips pre-split in both reserve branches.
+- `ca672f8cd` llama: loop-slot KV/conv-state device follows the physical
+  weights. `llama_model::dev_layer(il)` maps through virtual `layer_phys(il)`;
+  inkling2_loop slots 24..47 reuse layers 6..17, and slot-index placement put
+  their KV on a different device than the compute. RPC tg 2.2 -> 5.9.
+- `434b08557` rpc: forward `supports_op` queries to the peer
+  (`RPC_CMD_SUPPORTS_OP`, client cache keyed by op signature, proto patch
+  2 -> 3, both boards rebuilt together). ROOT CAUSE of the RPC garbage output:
+  `ggml_backend_rpc_device_supports_op` returned true unconditionally
+  (upstream TODO); the scheduler assigned ops the peer Vulkan cannot execute
+  and the peer silently miscomputed them. Evidence chain: weights
+  byte-identical on the peer (FNV-1a stream hashes 49/49), op kernels pass on
+  both boards (MUL_MAT_ID 1180/1180 incl. IQ3_S, TOP_K, SUM_ROWS/SQR/SQRT),
+  dense LFM3 coherent over the same RPC path, inkling2 garbage even all-peer
+  (-ts 100,0, 2 splits); coherent after the fix.
+- `1d7113e9b` llama: skip pipeline parallelism when an RPC backend is present.
+  It auto-enables for multi-device layer-split and sets n_copies=4,
+  quadrupling split-input copies - ruinous on 1GbE.
+- `a062dd502` rpc: log forwarded supports_op answers at GGML_RPC_DEBUG=2.
+- `5e5baa3ac` llama: `ggml_cont` on SITU gate/up. Vulkan SCALE requires
+  contiguous src0 (scale.comp uses flat indexing); the strided gate/up views
+  of the merged gate_up mul_mat_id output fell back to CPU per layer, and over
+  RPC each fallback copied the full gate_up tensor peer->client (~80 MB/token).
+  Q6_K -ts 25,75 ub128: pp 5.3 -> 13.1, tg 4.8 -> 9.8.
+
+## Inkling-2-Mini results (.104 client, .105 peer, 1GbE)
+
+| config | pp t/s | tg t/s | quality |
+|---|---|---|---|
+| AD-Q6_K 22 GB RPC -ts 25,75 ub128 c16384 q8_0 KV | 13.1 | 9.8 | Paris, reasoning, tool_calls correct |
+| AD-IQ3_S 13 GB single-board ub128 c16384 | 41.0 | 17.6 | coherent |
+| AD-IQ3_S RPC all-peer ub128 (before cont fix) | 30.5 | 23.9 | coherent after supports_op fix |
+
+Memory: Q6_K -ts 25,75 splits 12/12 physical layers (peer 11.77 GiB weights,
+client 10.43 GiB + embd); -ts 50,50 puts ALL 24 physical layers on RPC0
+(slots 0..23 cover every physical layer) and overflows; -ts 12.5,87.5 leaves
+18 layers + embd/out on the client (16.5 GiB) and overflows there. ub512 with
+-ts 25,75 OOM-killed the peer at reserve (compute buffers); ub128/256 fit.
+
+Grammar: the jinja tool-call grammar works after the correctness fix
+(`get_weather({"city":"Paris"})`, finish_reason=tool_calls). The earlier
+"Unexpected empty grammar stack" exception was a symptom of garbage output
+hitting the lazy tool-call grammar, not a grammar bug.
+
+## System changes on .105 (root)
+
+- klogd added to the default runlevel: peer OOM-kills were invisible before
+  (0 kernel lines in /var/log/messages); now captured.
+- /etc/drirc created (radv_enable_unified_heap_on_apu=false): HOST_CACHED
+  memory types 0 -> 3, mirrors .104. Perf only.
+- .105 fell back to the r2 kernel during the earlier crash loop (bootguard).
+  r2 OOM-kills cleanly; r3 sets panic_on_oops=1/hardlockup_panic=1/panic=60
+  and reboots on GPU faults. The original "instant disconnects" were peer
+  overcommit (21.7 GiB on one board with default -ts) -> OOM/panic.
+
+## Diagnostics that worked
+
+- GGML_SCHED_DEBUG=2 + -lv 5: per-node backend dump. Assignment causes need
+  the temporary `#if 0` -> `#if 1` at ggml-backend.cpp:1327 (revert after).
+- GGML_RPC_DEBUG=2: RPC DBG logs (not gated by -lv).
+- FNV-1a stream hash of GGUF tensor data vs rpc cache filenames: proves
+  upload/cache integrity (gguf-py t.data.offset is NOT a file offset; stream
+  t.data bytes instead).
+- All-peer (-ts 100,0) isolates split-composition bugs from single-device RPC
+  bugs; dense LFM3 is a good RPC control model (SWA + shortconv + FA + q8_0 KV).
+
+## Verification suite (post-fix)
+
+Guide baselines (post-fix, .104, drirc active, HOST_CACHED=1 MMID_TUNE=1):
+
+| test | baseline | now | delta |
+|---|---|---|---|
+| gemma4 MoE pp512 (ub1024) | ~1003 | 1012.9 +/- 2.2 | +1.0% |
+| gemma4 MoE pp2048 (ub1024) | ~1102 | 1101.0 +/- 4.5 | -0.1% |
+| gemma4 MoE tg128 | ~93 | 94.1 +/- 0.1 | +1.2% |
+| LFM3 dense pp2048 (ub512) | ~3391 | 3385.8 +/- 29.3 | -0.2% |
+| LFM3 dense tg128 | ~233 | 232.9 +/- 0.6 | -0.1% |
+| gemma4 RPC pp512 (ub256, ts 50,50) | ~758 | 750.6 / 754.2 | -0.5..-1.0% |
+| gemma4 RPC tg128 | ~47 | 45.3 / 44.7 | -3.6..-4.8% |
+| gemma4 server tg (256-token warm greedy x2) | ~83 | 86.3 / 87.0 | +4% |
+
+Server greedy quality: "The capital of France is Paris." - correct.
+
+RPC tg128 is ~4% below baseline: the pipeline-parallel disable removes the
+n_copies=4 copy/compute overlap. pp is at parity and the change is required
+for inkling2 correctness/perf on 1GbE (4x activation copies). Kept; re-enable
+in llama-context.cpp if gemma4 RPC tg ever takes priority over inkling2.
+
+Inkling sweep (final builds): IQ3_S single-board ub512 c16384: pp 50.7,
+tg 34.5 (fastest config; 13 GB quant fits one board). Q6_K 22 GB RPC
+-ts 25,75 ub256: pp 13.6, tg 9.6 (ub128: pp 13.1, tg 9.8 - ub256 fits but
+the wire, not compute, bounds RPC tg). Both coherent incl. tool calls.
