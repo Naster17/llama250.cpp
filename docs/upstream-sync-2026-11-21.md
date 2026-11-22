@@ -232,3 +232,22 @@ gfx1013 A/B before shipping; the guide suite is what caught this.
   softmax/top_k pattern; inkling uses sigmoid+bias+argsort_top_k+sum_rows
   normalization - pattern extension needed.
 - shortconv dynamic taps: 4 lags x (view/cont/mul/add) on full-attn layers.
+
+## Final numbers (3d7ec162f, clean builds both boards)
+
+| config | pp t/s | tg t/s | quality |
+|---|---|---|---|
+| IQ3_S single-board ub512 c16384 | 55.1 | 36.9 | Paris, coherent |
+| Q6_K 22 GB RPC -ts 25,75 ub256 | 15.0 | 10.4 | Paris + tool_calls |
+| IQ3_S RPC -ts 12.5,87.5 ub256 | 16.2 | 10.6 | Paris, coherent |
+
+Session start: Q6_K RPC was garbage at tg 2.2 / pp 5.3; IQ3_S single-board
+tg 34.5 / pp 50.7. Net: RPC correctness fixed, RPC tg 4.7x, single-board
+tg +7%, pp +9%.
+
+Guide parity on the final build: gemma4 pp512 993.4 / tg128 93.0, server tg
+84.2/84.1 (greedy Paris), LFM3 pp2048 3367.8 / tg128 229.8, gemma4 RPC
+pp512 752.1 / tg128 44.9 (the -4.5% RPC tg is the documented
+pipeline-parallel tradeoff). gemma4 pp2048 read 1029 +/- 43 vs the 1102
+reference; the same code measured 1101 earlier in this session, so this is
+run variance, not a regression - recheck if it persists.
