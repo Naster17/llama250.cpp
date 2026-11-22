@@ -12724,6 +12724,41 @@ void ggml_compute_forward_mhc_merge(const struct ggml_compute_params * params, s
     }
 }
 
+// ggml_compute_forward_loop_gate
+
+void ggml_compute_forward_loop_gate(const struct ggml_compute_params * params, struct ggml_tensor * dst) {
+    const struct ggml_tensor * cur     = dst->src[0];
+    const struct ggml_tensor * forget  = dst->src[1];
+    const struct ggml_tensor * gain    = dst->src[2];
+    const struct ggml_tensor * message = dst->src[3];
+
+    GGML_ASSERT(cur->type == GGML_TYPE_F32 && forget->type == GGML_TYPE_F32);
+    GGML_ASSERT(gain->type == GGML_TYPE_F32 && message->type == GGML_TYPE_F32);
+    GGML_ASSERT(ggml_is_contiguous(dst));
+    GGML_ASSERT(cur->nb[0] == sizeof(float) && forget->nb[0] == sizeof(float));
+    GGML_ASSERT(gain->nb[0] == sizeof(float) && message->nb[0] == sizeof(float));
+
+    const int64_t d     = cur->ne[0];
+    const int64_t n_tok = cur->ne[1];
+    const int64_t n_str = cur->ne[2];
+
+    float * out = (float *) dst->data;
+
+    for (int64_t s = 0; s < n_str; ++s) {
+        for (int64_t t = params->ith; t < n_tok; t += params->nth) {
+            const float * vc = (const float *) ((const char *) cur->data     + t*cur->nb[1]     + s*cur->nb[2]);
+            const float * vf = (const float *) ((const char *) forget->data  + t*forget->nb[1]  + s*forget->nb[2]);
+            const float * vg = (const float *) ((const char *) gain->data    + t*gain->nb[1]    + s*gain->nb[2]);
+            const float * vm = (const float *) ((const char *) message->data + t*message->nb[1] + s*message->nb[2]);
+            float       * vo = out + t*d + s*n_tok*d;
+
+            for (int64_t i = 0; i < d; ++i) {
+                vo[i] = vc[i]*(1.0f - vf[i]) + vg[i]*vm[i];
+            }
+        }
+    }
+}
+
 // ggml_compute_forward_lightning_indexer
 
 void ggml_compute_forward_lightning_indexer(

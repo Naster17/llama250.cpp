@@ -5688,6 +5688,20 @@ struct test_mhc_merge : public test_case {
     }
 };
 
+struct test_loop_gate : public test_case {
+    const int64_t d, n_tok;
+    std::string vars() override { return VARS_TO_STR2(d, n_tok); }
+    test_loop_gate(int64_t d = 2304, int64_t n_tok = 1) : d(d), n_tok(n_tok) {}
+    ggml_tensor * build_graph(ggml_context * ctx) override {
+        ggml_tensor * m = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, 2*d, n_tok, 1);
+        ggml_tensor * cur = ggml_view_3d(ctx, m, d, n_tok, 1, m->nb[1], m->nb[2], 0);
+        ggml_tensor * forget = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, d, n_tok, 1);
+        ggml_tensor * gain = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, d, n_tok, 1);
+        ggml_tensor * message = ggml_view_3d(ctx, m, d, n_tok, 1, m->nb[1], m->nb[2], d*sizeof(float));
+        return ggml_loop_gate(ctx, cur, forget, gain, message);
+    }
+};
+
 static int32_t test_get_op_params_i32(const ggml_tensor * tensor, uint32_t i) {
     GGML_ASSERT(i < GGML_MAX_OP_PARAMS / sizeof(int32_t));
     return tensor->op_params[i];
@@ -12133,6 +12147,10 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
     test_cases.emplace_back(new test_mhc_merge(4096, 512));
     test_cases.emplace_back(new test_mhc_merge(1000, 1));
     test_cases.emplace_back(new test_mhc_merge(1000, 7));
+    test_cases.emplace_back(new test_loop_gate(2304, 1));
+    test_cases.emplace_back(new test_loop_gate(2304, 7));
+    test_cases.emplace_back(new test_loop_gate(2304, 128));
+    test_cases.emplace_back(new test_loop_gate(1000, 7));
     test_cases.emplace_back(new test_mhc_merge(1000, 512));
 
     test_cases.emplace_back(new test_gla(GGML_TYPE_F32, 32, 64, 1, 1));

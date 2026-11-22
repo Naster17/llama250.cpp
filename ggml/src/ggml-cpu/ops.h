@@ -105,6 +105,7 @@ void ggml_compute_forward_gla(const struct ggml_compute_params * params, struct 
 void ggml_compute_forward_gated_delta_net(const struct ggml_compute_params * params, struct ggml_tensor * dst);
 void ggml_compute_forward_mhc_route(const struct ggml_compute_params * params, struct ggml_tensor * dst);
 void ggml_compute_forward_mhc_merge(const struct ggml_compute_params * params, struct ggml_tensor * dst);
+void ggml_compute_forward_loop_gate(const struct ggml_compute_params * params, struct ggml_tensor * dst);
 void ggml_compute_forward_lightning_indexer(const struct ggml_compute_params * params, struct ggml_tensor * dst);
 void ggml_compute_forward_dsv4_hc_comb(const struct ggml_compute_params * params, struct ggml_tensor * dst);
 void ggml_compute_forward_dsv4_hc_pre(const struct ggml_compute_params * params, struct ggml_tensor * dst);

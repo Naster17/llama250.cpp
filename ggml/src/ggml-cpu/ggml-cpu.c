@@ -2135,6 +2135,10 @@ static void ggml_compute_forward(struct ggml_compute_params * params, struct ggm
             {
                 ggml_compute_forward_mhc_merge(params, tensor);
             } break;
+        case GGML_OP_LOOP_GATE:
+            {
+                ggml_compute_forward_loop_gate(params, tensor);
+            } break;
         case GGML_OP_LIGHTNING_INDEXER:
             {
                 ggml_compute_forward_lightning_indexer(params, tensor);
@@ -2480,6 +2484,7 @@ static int ggml_get_n_tasks(struct ggml_tensor * node, int n_threads) {
         case GGML_OP_LIGHTNING_INDEXER:
         case GGML_OP_MHC_ROUTE:
         case GGML_OP_MHC_MERGE:
+        case GGML_OP_LOOP_GATE:
             {
                 n_tasks = n_threads;
             } break;

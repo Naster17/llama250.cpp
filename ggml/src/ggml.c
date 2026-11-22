@@ -1117,10 +1117,11 @@ static const char * GGML_OP_NAME[GGML_OP_COUNT] = {
 
     "MHC_ROUTE",
     "MHC_MERGE",
+    "LOOP_GATE",
     "SLEEP",
 };
 
-static_assert(GGML_OP_COUNT == 102, "GGML_OP_COUNT != 102");
+static_assert(GGML_OP_COUNT == 103, "GGML_OP_COUNT != 103");
 
 static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
     "none",
@@ -1234,10 +1235,11 @@ static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
 
     "mhc_route(a, b, w, bias)",
     "mhc_merge(a, b, x, packed)",
+    "loop_gate(cur, forget, gain, message)",
     "sleep(x)",
 };
 
-static_assert(GGML_OP_COUNT == 102, "GGML_OP_COUNT != 102");
+static_assert(GGML_OP_COUNT == 103, "GGML_OP_COUNT != 103");
 
 static_assert(GGML_OP_POOL_COUNT == 2, "GGML_OP_POOL_COUNT != 2");
 
@@ -5704,6 +5706,31 @@ struct ggml_tensor * ggml_mhc_merge(
     result->src[1] = b;
     result->src[2] = x;
     result->src[3] = packed;
+
+    return result;
+}
+
+// ggml_loop_gate
+
+struct ggml_tensor * ggml_loop_gate(
+        struct ggml_context * ctx,
+        struct ggml_tensor  * cur,
+        struct ggml_tensor  * forget,
+        struct ggml_tensor  * gain,
+        struct ggml_tensor  * message) {
+    GGML_ASSERT(cur->type == GGML_TYPE_F32 && forget->type == GGML_TYPE_F32);
+    GGML_ASSERT(gain->type == GGML_TYPE_F32 && message->type == GGML_TYPE_F32);
+    GGML_ASSERT(cur->nb[0] == sizeof(float) && forget->nb[0] == sizeof(float));
+    GGML_ASSERT(gain->nb[0] == sizeof(float) && message->nb[0] == sizeof(float));
+    GGML_ASSERT(ggml_are_same_shape(cur, forget) && ggml_are_same_shape(cur, gain) && ggml_are_same_shape(cur, message));
+
+    struct ggml_tensor * result = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, cur->ne[0], cur->ne[1], cur->ne[2]);
+
+    result->op     = GGML_OP_LOOP_GATE;
+    result->src[0] = cur;
+    result->src[1] = forget;
+    result->src[2] = gain;
+    result->src[3] = message;
 
     return result;
 }

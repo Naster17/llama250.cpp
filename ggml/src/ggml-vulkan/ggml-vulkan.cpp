@@ -4372,6 +4372,7 @@ void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested) {
     ggml_vk_create_pipeline(device, device->pipeline_ssm_conv_bias_silu_f32, "ssm_conv_bias_silu_f32", ssm_conv_f32_len, ssm_conv_f32_data, "main", 4, sizeof(vk_op_ssm_conv_push_constants), {32, 16, 1}, {32, 16, 1, 1}, 1);
     ggml_vk_create_pipeline(device, device->pipeline_mhc_route_f32, "mhc_route_f32", mhc_route_f32_len, mhc_route_f32_data, "main", 5, sizeof(vk_op_mhc_route_push_constants), {256, 1, 1}, {}, 1);
     ggml_vk_create_pipeline(device, device->pipeline_mhc_merge_f32, "mhc_merge_f32", mhc_merge_f32_len, mhc_merge_f32_data, "main", 5, sizeof(vk_op_mhc_merge_push_constants), {256, 1, 1}, {}, 1);
+    ggml_vk_create_pipeline(device, device->pipeline_loop_gate_f32, "loop_gate_f32", loop_gate_f32_len, loop_gate_f32_data, "main", 5, sizeof(vk_op_loop_gate_push_constants), {256, 1, 1}, {}, 1);
 
     ggml_vk_create_pipeline(device, device->pipeline_opt_step_adamw_f32, "opt_step_adamw_f32", opt_step_adamw_f32_len, opt_step_adamw_f32_data, "main", 5, sizeof(vk_op_push_constants), {512, 1, 1}, {}, 1);
 
@@ -11666,6 +11667,32 @@ void ggml_vk_mhc_merge(ggml_backend_vk_context * ctx, vk_context& subctx, const 
     ggml_vk_dispatch_pipeline(ctx, subctx, pipeline, { a_buf, b_buf, x_buf, p_buf, d_buf }, pc, { (uint32_t) a->ne[0], (uint32_t) a->ne[1], (uint32_t) a->ne[2] });
 }
 
+void ggml_vk_loop_gate(ggml_backend_vk_context * ctx, vk_context& subctx, const ggml_tensor * cur, const ggml_tensor * forget, const ggml_tensor * gain, const ggml_tensor * message, ggml_tensor * dst) {
+    VK_LOG_DEBUG("ggml_vk_loop_gate(" << cur << ", " << forget << ", " << gain << ", " << message << ", " << dst << ")");
+
+    vk_pipeline pipeline = ctx->device->pipeline_loop_gate_f32;
+    GGML_ASSERT(pipeline != nullptr);
+
+    ggml_pipeline_request_descriptor_sets(ctx, pipeline, 1);
+
+    const vk_subbuffer c_buf = ggml_vk_tensor_subbuffer(ctx, cur,     true);
+    const vk_subbuffer f_buf = ggml_vk_tensor_subbuffer(ctx, forget,  true);
+    const vk_subbuffer g_buf = ggml_vk_tensor_subbuffer(ctx, gain,    true);
+    const vk_subbuffer m_buf = ggml_vk_tensor_subbuffer(ctx, message, true);
+    const vk_subbuffer d_buf = ggml_vk_tensor_subbuffer(ctx, dst,     true);
+
+    vk_op_loop_gate_push_constants pc = {
+        ggml_vk_nb_elem(cur, 1), ggml_vk_nb_elem(cur, 2),
+        ggml_vk_nb_elem(forget, 1), ggml_vk_nb_elem(forget, 2),
+        ggml_vk_nb_elem(gain, 1), ggml_vk_nb_elem(gain, 2),
+        ggml_vk_nb_elem(message, 1), ggml_vk_nb_elem(message, 2),
+        (uint32_t) cur->ne[0], (uint32_t) cur->ne[1], (uint32_t) cur->ne[2],
+    };
+    init_pushconst_tensor_offsets(ctx, pc, cur, forget, gain, message, dst);
+
+    ggml_vk_dispatch_pipeline(ctx, subctx, pipeline, { c_buf, f_buf, g_buf, m_buf, d_buf }, pc, { (uint32_t) cur->ne[0], (uint32_t) cur->ne[1], (uint32_t) cur->ne[2] });
+}
+
 void ggml_vk_ssm_conv(ggml_backend_vk_context * ctx, vk_context& subctx, const struct ggml_cgraph * cgraph, int node_idx) {
     ggml_tensor * conv = cgraph->nodes[node_idx];
     const ggml_tensor * src0 = conv->src[0];
@@ -14071,6 +14098,11 @@ bool ggml_vk_build_graph(ggml_backend_vk_context * ctx, ggml_cgraph * cgraph, in
 
     case GGML_OP_MHC_MERGE:
         ggml_vk_mhc_merge(ctx, compute_ctx, node->src[0], node->src[1], node->src[2], node->src[3], node);
+
+        break;
+
+    case GGML_OP_LOOP_GATE:
+        ggml_vk_loop_gate(ctx, compute_ctx, node->src[0], node->src[1], node->src[2], node->src[3], node);
 
         break;
 
@@ -17400,6 +17432,21 @@ static bool ggml_backend_vk_device_supports_op(ggml_backend_dev_t dev, const ggm
             }
         case GGML_OP_MHC_ROUTE:
         case GGML_OP_MHC_MERGE:
+            {
+                if (op->type != GGML_TYPE_F32) {
+                    return false;
+                }
+                for (uint32_t i = 0; i < 4; ++i) {
+                    if (op->src[i] == nullptr || op->src[i]->type != GGML_TYPE_F32) {
+                        return false;
+                    }
+                    if (op->src[i]->nb[0] != sizeof(float)) {
+                        return false;
+                    }
+                }
+                return true;
+            }
+        case GGML_OP_LOOP_GATE:
             {
                 if (op->type != GGML_TYPE_F32) {
                     return false;

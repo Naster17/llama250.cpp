@@ -1,0 +1,39 @@
+#version 450
+
+// Inkling-2 loop control gate: out = cur*(1 - forget) + gain*message
+// Pure elementwise work, one thread per output element.
+
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+
+layout(push_constant) uniform parameter {
+    uint nb_c1; uint nb_c2;
+    uint nb_f1; uint nb_f2;
+    uint nb_g1; uint nb_g2;
+    uint nb_m1; uint nb_m2;
+    uint n_d; uint n_tok; uint n_str;
+} pc;
+
+layout(binding = 0, std430) readonly buffer C { float data_c[]; };
+layout(binding = 1, std430) readonly buffer F { float data_f[]; };
+layout(binding = 2, std430) readonly buffer G { float data_g[]; };
+layout(binding = 3, std430) readonly buffer M { float data_m[]; };
+layout(binding = 4, std430) buffer D { float data_d[]; };
+
+void main() {
+    const uint i = gl_GlobalInvocationID.x;
+    const uint t = gl_GlobalInvocationID.y;
+    const uint s = gl_GlobalInvocationID.z;
+    const uint d = pc.n_d;
+
+    if (i >= d) {
+        return;
+    }
+
+    const uint off_c = t*pc.nb_c1 + s*pc.nb_c2;
+    const uint off_f = t*pc.nb_f1 + s*pc.nb_f2;
+    const uint off_g = t*pc.nb_g1 + s*pc.nb_g2;
+    const uint off_m = t*pc.nb_m1 + s*pc.nb_m2;
+    const uint off_d = t*d + s*pc.n_tok*d;
+
+    data_d[off_d + i] = data_c[off_c + i]*(1.0f - data_f[off_f + i]) + data_g[off_g + i]*data_m[off_m + i];
+}

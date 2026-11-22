@@ -826,6 +826,14 @@ struct vk_op_mhc_merge_push_constants {
     uint32_t n_d; uint32_t n_tok; uint32_t n_str;
 };
 
+struct vk_op_loop_gate_push_constants {
+    uint32_t nb_c1; uint32_t nb_c2;
+    uint32_t nb_f1; uint32_t nb_f2;
+    uint32_t nb_g1; uint32_t nb_g2;
+    uint32_t nb_m1; uint32_t nb_m2;
+    uint32_t n_d; uint32_t n_tok; uint32_t n_str;
+};
+
 struct vk_op_conv2d_push_constants {
     uint32_t Cout;
     uint32_t Cin;

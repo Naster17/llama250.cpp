@@ -170,3 +170,44 @@ Inkling sweep (final builds): IQ3_S single-board ub512 c16384: pp 50.7,
 tg 34.5 (fastest config; 13 GB quant fits one board). Q6_K 22 GB RPC
 -ts 25,75 ub256: pp 13.6, tg 9.6 (ub128: pp 13.1, tg 9.8 - ub256 fits but
 the wire, not compute, bounds RPC tg). Both coherent incl. tool calls.
+
+---
+
+# Perf optimization pass (2026-11-22, Inkling-2)
+
+Goal: squeeze pp/tg on single-board and RPC, SenseNova-mHC style (study the
+hot graph, fuse what is slow, measure). Baselines before this pass:
+IQ3_S single ub512 pp 50.7 / tg 34.5; Q6_K RPC ts25,75 ub256 pp 13.6 / tg 9.6.
+
+## Changes
+
+- `e0e5b4228` ggml: populate use_counts on split graphs. The manual split
+  assembly left them zero, which silently disabled every use-count-gated
+  backend fusion (ggml_can_fuse_subgraph) on multi-backend local graphs and
+  on the RPC peer (the serializer sends the counts). Measured alone: ~flat
+  on inkling (its patterns mostly do not match the existing fusions), but
+  required for the fusions below and correct in general.
+- `5d89be2c0` ggml, vulkan: fused SiTU GLU op (GGML_GLU_OP_SITU). The SiTU
+  activation was ~10 elementwise ops per MoE layer over strided gate/up
+  views; now one shader reading both views directly (no cont copies).
+  CPU reference f32/f16/bf16, 24 backend-ops cases pass on gfx1013 and
+  Phoenix. No RPC protocol change (GLU variant, op_params carry beta/lb).
+  Measured: Q6_K RPC pp 12.7 -> 14.6 (+15%), tg 9.77 -> 10.0; IQ3_S RPC
+  ts12.5 pp 15.4 -> 16.2, tg 10.2 -> 10.6; single-board ~flat (pp 51.2,
+  tg 29.9 - dispatch overhead is spread over many other small ops).
+- LOOP_GATE op (pending commit): fuses the loop-control gating
+  add(sub(cur, mul(forget,cur)), mul(gain,message)) into one 4-src shader
+  (48 instances/token). GGML_OP_COUNT 102 -> 103, RPC proto patch 3 -> 4,
+  both boards rebuilt together.
+
+## Remaining levers (not done, documented)
+
+- mix() hyper-connection mixing: ~800 ops/token (3 mixes x 48 slots, each
+  concat+mul_mat+soft_max+mul_mat over the block bank). A fused
+  block-attention kernel is the biggest remaining tg lever (single-board
+  tg ~30 is dispatch-bound, not bandwidth-bound: ~57 GB/s effective vs
+  ~190 GB/s achieved by gemma4).
+- topk_moe routing fusion: existing fused_topk_moe expects a
+  softmax/top_k pattern; inkling uses sigmoid+bias+argsort_top_k+sum_rows
+  normalization - pattern extension needed.
+- shortconv dynamic taps: 4 lags x (view/cont/mul/add) on full-attn layers.

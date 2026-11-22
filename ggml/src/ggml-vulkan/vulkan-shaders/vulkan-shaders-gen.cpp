@@ -1223,6 +1223,7 @@ void process_shaders() {
 
     string_to_spv("mhc_route_f32", "mhc_route.comp", {});
     string_to_spv("mhc_merge_f32", "mhc_merge.comp", {});
+    string_to_spv("loop_gate_f32", "loop_gate.comp", {});
 
     string_to_spv("topk_moe_f32", "topk_moe.comp", {});
 
