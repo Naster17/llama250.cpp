@@ -167,6 +167,9 @@ For the full list of features, please refer to [server's changelog](https://gith
 | `-ctxcp, --ctx-checkpoints, --swa-checkpoints N` | max number of context checkpoints to create per slot (default: 32)[(more info)](https://github.com/ggml-org/llama.cpp/pull/15293)<br/>(env: LLAMA_ARG_CTX_CHECKPOINTS) |
 | `-cms, --checkpoint-min-step N` | minimum spacing between context checkpoints in tokens (default: 8192, 0 = no minimum)<br/>(env: LLAMA_ARG_CHECKPOINT_MIN_SPACING_NT) |
 | `-cram, --cache-ram N` | set the maximum cache size in MiB (default: 8192, 0 for decision models, -1 - no limit, 0 - disable)[(more info)](https://github.com/ggml-org/llama.cpp/pull/16391)<br/>(env: LLAMA_ARG_CACHE_RAM) |
+| `-cdisk, --cache-disk PATH` | directory of the disk prompt cache: the prompts that are dropped from the RAM cache are saved there in the background when the server is idle, one writer per -t thread for different prompts in parallel, and loaded back when needed, also after a restart (default: disabled, requires cache-ram)<br/>(env: LLAMA_ARG_CACHE_DISK) |
+| `-cdlim, --cache-disk-limit N` | set the maximum size of the disk prompt cache directory in MiB, the oldest files are removed first (default: -1, -1 - no limit)<br/>(env: LLAMA_ARG_CACHE_DISK_LIMIT) |
+| `-cdcore, --cache-disk-core` | pin disk prompt cache entries as core/base prompts so they are never evicted by size limit or replaced by a longer prompt (default: disabled, requires --cache-disk)<br/>(env: LLAMA_ARG_CACHE_DISK_CORE) |
 | `-kvu, --kv-unified, -no-kvu, --no-kv-unified` | use single unified KV buffer shared across all sequences (default: enabled if number of slots is auto)<br/>(env: LLAMA_ARG_KV_UNIFIED) |
 | `--cache-idle-slots, --no-cache-idle-slots` | save idle slots to the prompt cache on new task, and clear them when using unified KV (default: enabled, requires cache-ram)<br/>(env: LLAMA_ARG_CACHE_IDLE_SLOTS) |
 | `--context-shift, --no-context-shift` | whether to use context shift on infinite text generation (default: disabled)<br/>(env: LLAMA_ARG_CONTEXT_SHIFT) |
@@ -345,6 +348,25 @@ services:
       LLAMA_ARG_ENDPOINT_METRICS: 1
       LLAMA_ARG_PORT: 8080
 ```
+
+### Disk prompt cache
+
+`-cdisk PATH` enables a persistent prompt cache on disk (requires `-cram`). The cache stores serialized KV states as `.kvc` files keyed by model/adapter compat id and prompt hash. The directory is scanned at startup and stale temp files are removed.
+
+Runtime behavior (this fork):
+
+- **Idle-only extraction.** A completed slot is persisted only when the task queue is empty and every slot is idle. GPU readback (`llama_state_seq_get_data_ext`) never runs during decode.
+- **Background writers.** Different prompts are written by a pool of `max(1, -t)` worker threads (shared with `-t`). Writes are chunked (4 MiB) so shutdown can cancel an in-flight write quickly; cancelled writes leave a `.tmp` that scan removes on next start.
+- **No duplicate writes.** `is_cached()`/disk-name dedup skip prompts already in RAM or on disk; identical content is not rewritten.
+- **Keep restored states in RAM.** A disk/RAM cache hit restores KV into the slot but keeps the host copy in RAM (MRU) while `-cram` allows, so a later prompt swap avoids a disk read and a redundant GPU readback.
+- **Startup warmup.** MRU disk entries are warmed into the OS page cache in a background thread after init.
+- **Parallel disk reads.** Large state blobs (>=32 MiB) are read in up to `min(-t,4)` parallel chunks.
+
+Limits and caveats:
+
+- Exit cancels pending disk writes; the last prompt may not be persisted if you quit before its background save finished. Cache is optional; correctness is unaffected.
+- GPU/RPC restore (`llama_state_seq_set_data_ext` back to device) is synchronous on the main server thread. Keeping states in RAM removes disk I/O, but RPC/device upload is still hardware-bound.
+- A single `.kvc` file is written as one sequential stream; parallelism helps when several prompts are saved.
 
 ### Multimodal support
 

@@ -382,7 +382,7 @@ struct server_slot {
     }
 
     bool prompt_load(server_prompt_cache & prompt_cache, const server_tokens & tokens, const std::vector<common_adapter_lora_info> & lora_new) {
-        bool res = prompt_cache.load(prompt, tokens, lora_new, ctx_tgt, ctx_dft, id);
+        bool res = prompt_cache.load(prompt, tokens, lora_new, ctx_tgt, ctx_dft, id, n_ctx);
         if (!res) {
             SLT_WRN(*this, "%s", "failed to load prompt from cache\n");
         }
@@ -1133,6 +1133,9 @@ private:
 
     std::unique_ptr<server_prompt_cache> prompt_cache;
 
+    // the lora config that the disk prompt cache is valid for
+    std::vector<common_adapter_lora_info> lora_init;
+
     server_metrics metrics;
 
     // queued prompt stats - llama_decode() is async, so the timing is only valid after a sync
@@ -1152,8 +1155,54 @@ private:
     bool sleeping = false;
 
     int64_t t_last_load_progress_ms = 0;
+    int64_t t_last_persist_ms       = 0;
+
+    // keeps the prompts for the next start, the idle slots included
+    void persist_prompt_cache() {
+        if (!prompt_cache || !prompt_cache->disk) {
+            return;
+        }
+
+        // avoid mid-session churn: agentic tool loops go idle between turns, but saving the full
+        // growing conversation on every idle is expensive and creates many large files
+        const int64_t now = ggml_time_ms();
+        if (t_last_persist_ms != 0 && now - t_last_persist_ms < 30000) {
+            return;
+        }
+
+        // extracting a state from the GPU contexts is not safe while any slot is decoding
+        for (const auto & slot : slots) {
+            if (slot.is_processing()) {
+                return;
+            }
+        }
+
+        bool saved = false;
+        for (auto & slot : slots) {
+            // the state extraction reads the whole KV cache from the GPU, skip it when the cache already has the prompt
+            if (prompt_cache->is_cached(slot.prompt)) {
+                continue;
+            }
+
+            // avoid saving every small conversation increment: a full 2GB+ state for a few new tokens is wasteful
+            const size_t cached_prefix = prompt_cache->get_cached_prefix(slot.prompt);
+            const size_t n_new = slot.prompt.tokens.size() > cached_prefix ? slot.prompt.tokens.size() - cached_prefix : 0;
+            if (cached_prefix > 0 && n_new < 1024) {
+                SRV_DBG("prompt cache persist: skipping slot %d, only %zu new tokens over cached prefix %zu\n", slot.id, n_new, cached_prefix);
+                continue;
+            }
+
+            saved = slot.prompt_save(*prompt_cache) || saved;
+        }
+
+        if (saved) {
+            prompt_cache->flush_to_disk();
+        }
+        t_last_persist_ms = now;
+    }
 
     void destroy() {
+        // in-flight saves are cancelled by the disk cache destructor, the exit does not wait for disk I/O
         spec.reset();
         spec_init.reset();
 
@@ -1630,8 +1679,24 @@ private:
             SRV_TRC("%s", "use `--cache-ram 0` to disable the prompt cache\n");
 
             prompt_cache = std::make_unique<server_prompt_cache>(params_base.cache_ram_mib, n_ctx);
+
+            if (!params_base.cache_disk_path.empty()) {
+                const size_t limit_size = 1024ull*1024ull*(params_base.cache_disk_limit_mib < 0 ? 0 : params_base.cache_disk_limit_mib);
+
+                lora_init = params_base.lora_adapters;
+
+                prompt_cache->lora_init = lora_init;
+                prompt_cache->disk = std::make_unique<server_prompt_cache_disk>(
+                        params_base.cache_disk_path, server_prompt_cache_disk_compat(params_base), limit_size, mctx != nullptr,
+                        params_base.cpuparams.n_threads > 0 ? params_base.cpuparams.n_threads : 4);
+                prompt_cache->disk->pin_core = params_base.cache_disk_core;
+            }
         } else {
             SRV_TRC("%s", "prompt cache is disabled - use `--cache-ram N` to enable it\n");
+
+            if (!params_base.cache_disk_path.empty()) {
+                SRV_WRN("%s", "--cache-disk needs the prompt cache, it is ignored\n");
+            }
         }
         SRV_TRC("%s", "for more info see https://github.com/ggml-org/llama.cpp/pull/16391\n");
 
@@ -1675,6 +1740,9 @@ private:
         queue_tasks.on_update_slots([this]() {
             update_slots();
         });
+        queue_tasks.on_idle([this]() {
+            persist_prompt_cache();
+        });
         queue_tasks.on_sleeping_state([this](bool sleeping) {
             handle_sleeping_state(sleeping);
         });
@@ -1695,6 +1763,11 @@ private:
                 }
                 SRV_DBG("%s", "__TEST_TAG_CACHE_IDLE_SLOTS_ENABLED__\n");
             }
+        }
+
+        // warm disk cache entries in the background so the first request hits the page cache
+        if (prompt_cache && prompt_cache->disk) {
+            prompt_cache->disk->start_warmup();
         }
 
         {
@@ -1905,6 +1978,10 @@ private:
             }
         }
         slot.lora = task_loras;
+
+        if (prompt_cache && prompt_cache->disk && !are_lora_equal(slot.lora, lora_init)) {
+            slot.prompt.lora_changed = true;
+        }
 
         // if using alora, make sure it's only a single one requested and active
         size_t alora_invocation_start = task.tokens.size();
@@ -3273,6 +3350,9 @@ private:
 
                         slot->prompt.clear();
                         slot->prompt.tokens = std::move(restored);
+
+                        // the lora config of a slot file is not known
+                        slot->prompt.lora_changed = true;
                     } catch (const std::exception & err) {
                         slot->prompt_clear();
                         send_error(task, std::string("Unable to restore slot: ") + err.what(), ERROR_TYPE_INVALID_REQUEST);

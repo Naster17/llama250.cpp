@@ -321,6 +321,18 @@ void server_queue::start_loop(int64_t idle_sleep_ms) {
             time_last_task = std::min(now, time_last_task + (now - t_update_slots));
         }
 
+        // no pending task: give the server a chance to do slow work such as the prompt cache save
+        // the callback checks that no slot is processing before it touches the contexts
+        {
+            std::unique_lock<std::mutex> lock(mutex_tasks);
+            const bool idle = queue_tasks.empty();
+            lock.unlock();
+
+            if (idle && callback_idle) {
+                callback_idle();
+            }
+        }
+
         QUE_DBG("%s", "waiting for new tasks\n");
         while (true) {
             std::unique_lock<std::mutex> lock(mutex_tasks);
