@@ -228,11 +228,16 @@ struct server_prompt_cache {
 
     server_prompt_cache_state * alloc(const server_prompt & prompt, size_t state_size_main, size_t state_size_drft);
 
+    // the cached state that is a better starting point than `prompt` for `tokens_new`, states.end() if none
+    // lcp: the common prefix of that state with `tokens_new`
     // lora_new: the lora config of the new prompt, the states made with another config are skipped
-    // n_ctx_slot: longer prompts are not loaded from the disk
-    bool load(server_prompt & prompt, const server_tokens & tokens_new, const std::vector<common_adapter_lora_info> & lora_new, llama_context * ctx_tgt, llama_context * ctx_dft, int32_t id_slot, int32_t n_ctx_slot);
+    std::list<std::shared_ptr<server_prompt_cache_state>>::const_iterator find_better(const server_prompt & prompt, const server_tokens & tokens_new, const std::vector<common_adapter_lora_info> & lora_new, int & lcp) const;
 
-    void update();
+    bool has_better(const server_prompt & prompt, const server_tokens & tokens_new, const std::vector<common_adapter_lora_info> & lora_new) const;
+
+    // restore the result of find_better into the slot `id_slot`
+    // n_ctx_slot: disk entries longer than this are skipped (-1 = no limit)
+    bool load(server_prompt & prompt, const server_tokens & tokens_new, const std::vector<common_adapter_lora_info> & lora_new, llama_context * ctx_tgt, llama_context * ctx_dft, int32_t id_slot, int32_t n_ctx_slot = -1);
 
     // saves all the states to disk in the background, they stay in the RAM
     void flush_to_disk();
@@ -242,6 +247,8 @@ struct server_prompt_cache {
 
     // longest cached prefix for this prompt in RAM or on disk (lower bound for disk entries)
     size_t get_cached_prefix(const server_prompt & prompt) const;
+
+    void update();
 
 private:
     void save_to_disk(const std::shared_ptr<server_prompt_cache_state> & state);
@@ -279,5 +286,6 @@ struct server_slot_sched {
     std::vector<int> get_free_slots(const std::vector<server_slot_info> & slots, size_t n_slots_needed, int exclude_id_slot) const;
 
     // lora: the lora config of the task
-    server_slot_plan select(const std::vector<server_slot_info> & slots, const server_task & task, const std::vector<common_adapter_lora_info> & lora) const;
+    // prompt_cache: nullptr if disabled
+    server_slot_plan select(const std::vector<server_slot_info> & slots, const server_task & task, const std::vector<common_adapter_lora_info> & lora, const server_prompt_cache * prompt_cache) const;
 };

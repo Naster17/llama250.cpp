@@ -6,6 +6,7 @@
 #include "log.h"
 
 #include <algorithm>
+#include <climits>
 #include <fstream>
 
 //
@@ -1173,35 +1174,24 @@ void server_prompt_cache::load_from_disk(const server_tokens & tokens_new, const
             if (lcp_cur >= lcp_rejected) {
                 lcp_rejected = lcp_cur;
                 entry_rejected = &entry;
-                reject_reason = "prefix too small";
+                reject_reason = "lcp too small";
             }
             continue;
         }
 
         if (lcp_cur > lcp_best) {
-            lcp_best   = lcp_cur;
+            lcp_best = lcp_cur;
             entry_best = &entry;
         }
     }
 
-    if (entry_best == nullptr) {
-        std::string tok_preview;
-        if (!tokens_new.has_mtmd) {
-            const auto & toks = tokens_new.get_tokens();
-            const size_t n = std::min<size_t>(toks.size(), 16);
-            for (size_t i = 0; i < n; i++) {
-                if (i) tok_preview += ",";
-                tok_preview += std::to_string(toks[i]);
-            }
-        } else {
-            tok_preview = "<mtmd>";
-        }
+    if (!entry_best) {
         if (entry_rejected) {
-            SRV_INF("disk prompt cache miss: checked=%zu lcp_best=%zu reason=%s candidate='%s' candidate_tokens=%zu candidate_lcp=%zu new_tokens=%zu first_tokens=[%s]\n",
-                    entries.size(), lcp_best, reject_reason, entry_rejected->name.c_str(), entry_rejected->n_tokens, lcp_rejected, tokens_new.size(), tok_preview.c_str());
+            SRV_DBG("disk prompt cache miss: checked=%zu lcp_best=%zu reason=%s candidate='%s' candidate_tokens=%zu candidate_lcp=%zu new_tokens=%zu\n",
+                    entries.size(), lcp_best, reject_reason, entry_rejected->name.c_str(), entry_rejected->n_tokens, lcp_rejected, tokens_new.size());
         } else {
-            SRV_INF("disk prompt cache miss: checked=%zu lcp_best=%zu reason=no usable entries new_tokens=%zu first_tokens=[%s]\n",
-                    entries.size(), lcp_best, tokens_new.size(), tok_preview.c_str());
+            SRV_DBG("disk prompt cache miss: checked=%zu lcp_best=%zu reason=no usable entries new_tokens=%zu\n",
+                    entries.size(), lcp_best, tokens_new.size());
         }
         return;
     }
@@ -1219,26 +1209,21 @@ void server_prompt_cache::load_from_disk(const server_tokens & tokens_new, const
     }
 }
 
-bool server_prompt_cache::load(server_prompt & prompt, const server_tokens & tokens_new, const std::vector<common_adapter_lora_info> & lora_new, llama_context * ctx_tgt, llama_context * ctx_dft, int32_t id_slot, int32_t n_ctx_slot) {
+std::list<std::shared_ptr<server_prompt_cache_state>>::const_iterator server_prompt_cache::find_better(const server_prompt & prompt, const server_tokens & tokens_new, const std::vector<common_adapter_lora_info> & lora_new, int & lcp) const {
     // a prompt made with another lora config is cleared before the new one starts, so it counts as empty
     const bool is_empty = prompt.tokens.empty() || lora_should_clear_cache(prompt.lora, lora_new);
 
-    int lcp_best = is_empty ? 0 : prompt.tokens.get_common_prefix(tokens_new);
+    lcp = is_empty ? 0 : prompt.tokens.get_common_prefix(tokens_new);
 
-    // disk cache is only valid for the startup lora config
-    if (disk && !lora_should_clear_cache(lora_init, lora_new)) {
-        load_from_disk(tokens_new, lora_new, lcp_best, n_ctx_slot);
-    }
-
-    float f_keep_best = is_empty ? -1.0f : float(lcp_best) / prompt.tokens.size(); // empty slot: any cache entry wins
-    float f_sim_best  = float(lcp_best) / tokens_new.size();
+    float f_keep_best = is_empty ? -1.0f : float(lcp) / prompt.tokens.size(); // empty slot: any cache entry wins
+    float f_sim_best  = float(lcp) / tokens_new.size();
 
     SRV_TRC(" - looking for better prompt, base f_keep = %.3f, f_sim = %.3f\n", f_keep_best, f_sim_best);
 
-    auto it_best = states.end();
+    auto it_best = states.cend();
 
     // find the most similar cached prompt, that would also preserve the most context
-    for (auto it = states.begin(); it != states.end(); ++it) {
+    for (auto it = states.cbegin(); it != states.cend(); ++it) {
         if (lora_should_clear_cache((*it)->prompt.lora, lora_new)) {
             SRV_TRC("   - prompt with length %7zu, skipping, other lora config\n", (*it)->prompt.tokens.size());
             continue;
@@ -1265,15 +1250,47 @@ bool server_prompt_cache::load(server_prompt & prompt, const server_tokens & tok
         if (f_keep_best < f_keep_cur && f_sim_best < f_sim_cur) {
             f_keep_best = f_keep_cur;
             f_sim_best  = f_sim_cur;
-            lcp_best    = lcp_cur;
+            lcp         = lcp_cur;
 
             it_best = it;
         }
     }
 
-    if (it_best != states.end()) {
+    if (it_best != states.cend()) {
         SRV_TRC(" - found better prompt with f_keep = %.3f, f_sim = %.3f\n", f_keep_best, f_sim_best);
+    }
 
+    return it_best;
+}
+
+bool server_prompt_cache::has_better(const server_prompt & prompt, const server_tokens & tokens_new, const std::vector<common_adapter_lora_info> & lora_new) const {
+    int lcp = 0;
+
+    return find_better(prompt, tokens_new, lora_new, lcp) != states.cend();
+}
+
+bool server_prompt_cache::load(server_prompt & prompt, const server_tokens & tokens_new, const std::vector<common_adapter_lora_info> & lora_new, llama_context * ctx_tgt, llama_context * ctx_dft, int32_t id_slot, int32_t n_ctx_slot) {
+    int lcp_best = 0;
+
+    // disk cache is only valid for the startup lora config
+    if (disk && !lora_should_clear_cache(lora_init, lora_new)) {
+        const int32_t n_ctx_limit = n_ctx_slot > 0 ? n_ctx_slot : INT32_MAX;
+        int lcp_disk = prompt.tokens.empty() || lora_should_clear_cache(prompt.lora, lora_new)
+            ? 0 : prompt.tokens.get_common_prefix(tokens_new);
+        load_from_disk(tokens_new, lora_new, (size_t) lcp_disk, n_ctx_limit);
+    }
+
+    const auto it_found = find_better(prompt, tokens_new, lora_new, lcp_best);
+
+    auto it_best = states.end();
+    if (it_found != states.cend()) {
+        // convert const_iterator to iterator for erase/splice
+        it_best = states.begin();
+        std::advance(it_best, std::distance(states.cbegin(), it_found));
+        it_best = states.erase(it_best, it_best);
+    }
+
+    if (it_best != states.end()) {
         const int64_t t_start = ggml_time_us();
 
         {
@@ -1389,7 +1406,7 @@ std::vector<int> server_slot_sched::get_free_slots(const std::vector<server_slot
     return res;
 }
 
-server_slot_plan server_slot_sched::select(const std::vector<server_slot_info> & slots, const server_task & task, const std::vector<common_adapter_lora_info> & lora) const {
+server_slot_plan server_slot_sched::select(const std::vector<server_slot_info> & slots, const server_task & task, const std::vector<common_adapter_lora_info> & lora, const server_prompt_cache * prompt_cache) const {
     const server_slot_info * ret = nullptr;
 
     bool update_cache = false;
@@ -1460,7 +1477,9 @@ server_slot_plan server_slot_sched::select(const std::vector<server_slot_info> &
         }
 
         if (ret != nullptr) {
-            const float f_keep = (f_sim_best*task.tokens.size()) / ret->prompt->tokens.size();
+            // empty slot: nothing to keep, avoid 0/0
+            const float f_keep = ret->prompt->tokens.size() > 0 ?
+                (f_sim_best*task.tokens.size()) / ret->prompt->tokens.size() : 0.0f;
 
             if (task.id_slot == -1) {
                 SLT_INF(*ret, "selected slot by LCP similarity, f_sim_best = %.3f (> %.3f thold), f_keep = %.3f\n",
@@ -1492,7 +1511,13 @@ server_slot_plan server_slot_sched::select(const std::vector<server_slot_info> &
     }
 
     // cache prompts only for the tasks that reuse them
-    update_cache = update_cache && !task.is_stateless();
+    if (prompt_cache == nullptr || task.is_stateless()) {
+        return { ret->id, false };
+    }
+
+    // the checks above only tell if the outgoing state is worth saving
+    // the cache can still hold a better start for this task, so ask it
+    update_cache = update_cache || prompt_cache->has_better(*ret->prompt, task.tokens, lora);
 
     return { ret->id, update_cache };
 }
