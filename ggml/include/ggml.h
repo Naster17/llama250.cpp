@@ -260,7 +260,18 @@ extern "C" {
         GGML_TYPE_Q1_0    = 41,
         GGML_TYPE_Q2_0    = 42,
         GGML_TYPE_F8_E4M3 = 43,
-        GGML_TYPE_COUNT   = 44,
+        GGML_TYPE_TURBO2_0 = 44, // TurboQuant 2-bit KV cache: WHT + 2-bit PolarQuant (runtime-only KV type)
+        GGML_TYPE_TURBO3_0 = 45, // TurboQuant 3-bit KV cache: WHT + 3-bit PolarQuant (runtime-only KV type)
+        GGML_TYPE_TQ3_1S  = 46, // TurboQuant 3-bit weight: WHT-rotated 8-level Lloyd-Max, block_size=32
+        GGML_TYPE_TQ4_1S  = 47, // TurboQuant 4-bit weight: WHT-rotated 16-level Lloyd-Max, block_size=32
+        GGML_TYPE_TURBO4_0 = 48, // TurboQuant 4-bit KV cache: WHT + 4-bit PolarQuant (runtime-only KV type)
+        GGML_TYPE_Q8_CR   = 49, // Q8_0 blocks of a ConvRot-rotated tensor
+        GGML_TYPE_Q5_CR   = 50, // Q5_0 blocks of a ConvRot-rotated tensor
+        GGML_TYPE_Q6_CR   = 51, // Q6_K blocks of a ConvRot-rotated tensor
+        GGML_TYPE_TURBO5_0 = 52, // TurboQuant 5-bit KV cache: WHT + 5-bit PolarQuant (runtime-only KV type)
+        GGML_TYPE_TURBO6_0 = 53, // TurboQuant 6-bit KV cache: WHT + 6-bit PolarQuant (runtime-only KV type)
+        GGML_TYPE_TQ3_4S  = 54, // TQ3_1S indices, 6-bit half-block scales under one fp16 scale, block_size=128
+        GGML_TYPE_COUNT   = 55,
     };
 
     // [TAG_GGML_PREC]
@@ -317,6 +328,9 @@ extern "C" {
         GGML_FTYPE_MOSTLY_Q1_0    = 27, // except 1d tensors
         GGML_FTYPE_MOSTLY_Q2_0    = 28, // except 1d tensors
         GGML_FTYPE_MOSTLY_F8_E4M3 = 29, // except 1d tensors
+        GGML_FTYPE_MOSTLY_Q8_CR   = 30, // except 1d tensors
+        GGML_FTYPE_MOSTLY_Q5_CR   = 31, // except 1d tensors
+        GGML_FTYPE_MOSTLY_Q6_CR   = 32, // except 1d tensors
     };
 
     // available tensor operations:
@@ -410,6 +424,7 @@ extern "C" {
         GGML_OP_RWKV_WKV7,
         GGML_OP_SOLVE_TRI,
         GGML_OP_GATED_DELTA_NET,
+        GGML_OP_TURBO_WHT,
         GGML_OP_LIGHTNING_INDEXER,
         GGML_OP_DSV4_HC_COMB,
         GGML_OP_DSV4_HC_PRE,
@@ -2507,6 +2522,16 @@ extern "C" {
             struct ggml_tensor  * state,
             int64_t               K),
         "use ggml_gated_delta_net_ext instead");
+
+    // TurboQuant Walsh-Hadamard Transform (O(d log d) rotation for KV cache compression)
+    // Applies WHT rotation to 128-element groups along ne[0]: sign1 -> butterfly -> sign2 -> normalize
+    // direction: 0 = forward (signs1 -> WHT -> signs2), 1 = inverse (signs2 -> WHT -> signs1)
+    GGML_API struct ggml_tensor * ggml_turbo_wht(
+            struct ggml_context * ctx,
+            struct ggml_tensor  * a,
+            int                   direction,
+            int                   group_size,    // 0 = auto (64 or 128 from ne[0])
+            struct ggml_tensor  * scale);        // NULL = no InnerQ scaling
 
     // DSA lightning indexer
     //

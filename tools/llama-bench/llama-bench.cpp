@@ -521,6 +521,39 @@ static ggml_type ggml_type_from_name(const std::string & s) {
     if (s == "iq4_nl") {
         return GGML_TYPE_IQ4_NL;
     }
+    if (s == "turbo2" || s == "turbo2_0") {
+        return GGML_TYPE_TURBO2_0;
+    }
+    if (s == "turbo3" || s == "turbo3_0") {
+        return GGML_TYPE_TURBO3_0;
+    }
+    if (s == "turbo4" || s == "turbo4_0") {
+        return GGML_TYPE_TURBO4_0;
+    }
+    if (s == "turbo5" || s == "turbo5_0") {
+        return GGML_TYPE_TURBO5_0;
+    }
+    if (s == "turbo6" || s == "turbo6_0") {
+        return GGML_TYPE_TURBO6_0;
+    }
+    if (s == "tq3_1s") {
+        return GGML_TYPE_TQ3_1S;
+    }
+    if (s == "tq4_1s") {
+        return GGML_TYPE_TQ4_1S;
+    }
+    if (s == "tq3_4s") {
+        return GGML_TYPE_TQ3_4S;
+    }
+    if (s == "q8_cr") {
+        return GGML_TYPE_Q8_CR;
+    }
+    if (s == "q5_cr") {
+        return GGML_TYPE_Q5_CR;
+    }
+    if (s == "q6_cr") {
+        return GGML_TYPE_Q6_CR;
+    }
 
     return GGML_TYPE_COUNT;
 }

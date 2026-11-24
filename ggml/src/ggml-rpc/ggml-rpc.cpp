@@ -331,6 +331,7 @@ RPC_MSG_TYPES(RPC_CMD_COMM_INIT,         rpc_msg_comm_init_req,         rpc_msg_
 RPC_MSG_TYPES(RPC_CMD_COMM_ALLREDUCE,    rpc_msg_comm_allreduce_req,    void);
 RPC_MSG_TYPES(RPC_CMD_COMM_FREE,         rpc_msg_comm_free_req,         void);
 
+RPC_MSG_TYPES(RPC_CMD_SUPPORTS_OP,       rpc_msg_supports_op_req,       rpc_msg_supports_op_rsp);
 #undef RPC_MSG_TYPES
 
 // RPC data structures
@@ -2395,7 +2396,12 @@ bool rpc_server::graph_compute(const std::vector<uint8_t> & input) {
 
     ggml_status status = ggml_backend_graph_compute_async(backends[device], graph);
     GGML_ASSERT(status == GGML_STATUS_SUCCESS && "Unsuccessful graph computations are not supported with RPC");
-    sg.graph = graph;
+    if (uid == 0) {
+        // uncached graph: sync before local sg_tmp buffer is destroyed
+        ggml_backend_synchronize(backends[device]);
+    } else {
+        sg.graph = graph;
+    }
     LOG_DBG3("[%s] device: %u, graph build: %.3f ms\n", __func__, device, deserialize_ms.count());
     return true;
 }
@@ -2705,6 +2711,7 @@ bool rpc_server::comm_allreduce_pairwise(void * comm_ctx_v, ggml_tensor ** tenso
     } else {
         compute_nodes(t_red, nullptr);
     }
+    ggml_backend_synchronize(backend);
     return true;
 }
 
@@ -2888,6 +2895,7 @@ static void rpc_serve_client(const std::vector<ggml_backend_t> & backends, const
                 case RPC_CMD_COMM_INIT:         ok = rpc_serve<RPC_CMD_COMM_INIT>        (sock, server, &rpc_server::comm_init);         break;
                 case RPC_CMD_COMM_ALLREDUCE:    ok = rpc_serve<RPC_CMD_COMM_ALLREDUCE>   (sock, server, &rpc_server::comm_allreduce);    break;
                 case RPC_CMD_COMM_FREE:         ok = rpc_serve<RPC_CMD_COMM_FREE>        (sock, server, &rpc_server::comm_free);         break;
+                case RPC_CMD_SUPPORTS_OP:       ok = rpc_serve<RPC_CMD_SUPPORTS_OP>      (sock, server, &rpc_server::supports_op);       break;
                 default:
                     // HELLO is only valid as the first command
                     LOG_ERROR("Unhandled command: %s\n", rpc_cmd_name((enum rpc_cmd)cmd));
