@@ -632,6 +632,53 @@ void load_a_to_shmem(const uint pos_a, const uint row, const uint col, const uin
 
         const uint k_pair = row * mm_load_vec_a() / 2;
         store_a(col, k_pair, FLOAT_TYPEV2(v.xy));
+    } else if (MmTypeA == GGML_TYPE_TQ3_1S) {
+        const float centroids[8] = float[8](
+            -1.996684, -1.291398, -0.740341, -0.247508,
+             0.230106,  0.725222,  1.277503,  1.988943
+        );
+        const uint idx = pos_a + col * p.stride_a / mm_load_vec_a() + row;
+        const uint ib  = idx / 16;
+        const uint iqs = (idx % 16) * 2;
+
+        const float d0 = float(a_tq3_1s.data[ib].d0);
+        const float d1 = float(a_tq3_1s.data[ib].d1);
+        vec2 v;
+        [[unroll]] for (uint kk = 0u; kk < 2u; ++kk) {
+            const uint j  = iqs + kk;
+            const uint g  = (j >> 3) * 3u;
+            const uint pck = uint(a_tq3_1s.data[ib].qs[g])
+                           | (uint(a_tq3_1s.data[ib].qs[g + 1u]) << 8)
+                           | (uint(a_tq3_1s.data[ib].qs[g + 2u]) << 16);
+            const uint ci = (pck >> ((j & 7u) * 3u)) & 7u;
+            v[kk] = ((j < 16u) ? d0 : d1) * centroids[ci];
+        }
+        const uint k_pair = row * mm_load_vec_a() / 2;
+        store_a(col, k_pair, FLOAT_TYPEV2(v.xy));
+    } else if (MmTypeA == GGML_TYPE_TQ4_1S) {
+        const float centroids[16] = float[16](
+            -2.732590, -2.069017, -1.618046, -1.256231,
+            -0.942340, -0.656759, -0.388048, -0.128395,
+             0.128395,  0.388048,  0.656759,  0.942340,
+             1.256231,  1.618046,  2.069017,  2.732590
+        );
+        const uint idx = pos_a + col * p.stride_a / mm_load_vec_a() + row;
+        const uint ib  = idx / 16;
+        const uint iqs = (idx % 16) * 2;
+
+        const float d0 = float(a_tq4_1s.data[ib].d0);
+        const float d1 = float(a_tq4_1s.data[ib].d1);
+        const uint b0 = uint(a_tq4_1s.data[ib].qs[iqs / 2]);
+        const uint j0 = iqs;
+        const uint j1 = iqs + 1;
+        const uint ci0 = (j0 & 1u) == 0u ? (b0 & 0xFu) : (b0 >> 4u);
+        const uint ci1 = (j1 & 1u) == 0u ? (b0 & 0xFu) : (b0 >> 4u);
+        const vec2 v = vec2(
+            ((j0 < 16u) ? d0 : d1) * centroids[ci0],
+            ((j1 < 16u) ? d0 : d1) * centroids[ci1]
+        );
+        const uint k_pair = row * mm_load_vec_a() / 2;
+        store_a(col, k_pair, FLOAT_TYPEV2(v.xy));
     }
 #endif
 }

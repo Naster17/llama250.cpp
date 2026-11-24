@@ -311,6 +311,86 @@ f16vec4 dequantFuncTQ2_0_v(const in decodeBufTQ2_0 bl, const in uint blockCoords
 
     return bl.block.d * (f16vec4(q) - f16vec4(1.0));
 }
+ 
+layout(buffer_reference, std430, buffer_reference_align = 2) buffer decodeBufTQ3_1S {
+   readonly block_tq3_1s block;
+};
+
+float16_t dequantFuncTQ3_1S(const in decodeBufTQ3_1S bl, const in uint blockCoords[2], const in uint coordInBlock[2])
+{
+    const float16_t centroids[8] = float16_t[8](
+        float16_t(-1.996684), float16_t(-1.291398), float16_t(-0.740341), float16_t(-0.247508),
+        float16_t( 0.230106), float16_t( 0.725222), float16_t( 1.277503), float16_t( 1.988943)
+    );
+    const uint j = coordInBlock[1];
+    const uint g = (j >> 3) * 3u;
+    const uint pck = uint(bl.block.qs[g])
+                   | (uint(bl.block.qs[g + 1u]) << 8)
+                   | (uint(bl.block.qs[g + 2u]) << 16);
+    const uint ci = (pck >> ((j & 7u) * 3u)) & 7u;
+    const float16_t d = (j < 16u) ? bl.block.d0 : bl.block.d1;
+    return d * centroids[ci];
+}
+
+f16vec4 dequantFuncTQ3_1S_v(const in decodeBufTQ3_1S bl, const in uint blockCoords[2], const in uint coordInBlock[2])
+{
+    const float16_t centroids[8] = float16_t[8](
+        float16_t(-1.996684), float16_t(-1.291398), float16_t(-0.740341), float16_t(-0.247508),
+        float16_t( 0.230106), float16_t( 0.725222), float16_t( 1.277503), float16_t( 1.988943)
+    );
+    const uint j0 = coordInBlock[1];
+    f16vec4 v;
+    [[unroll]] for (uint k = 0u; k < 4u; ++k) {
+        const uint j = j0 + k;
+        const uint g = (j >> 3) * 3u;
+        const uint pck = uint(bl.block.qs[g])
+                       | (uint(bl.block.qs[g + 1u]) << 8)
+                       | (uint(bl.block.qs[g + 2u]) << 16);
+        const uint ci = (pck >> ((j & 7u) * 3u)) & 7u;
+        const float16_t d = (j < 16u) ? bl.block.d0 : bl.block.d1;
+        v[k] = d * centroids[ci];
+    }
+    return v;
+}
+
+layout(buffer_reference, std430, buffer_reference_align = 2) buffer decodeBufTQ4_1S {
+   readonly block_tq4_1s block;
+};
+
+float16_t dequantFuncTQ4_1S(const in decodeBufTQ4_1S bl, const in uint blockCoords[2], const in uint coordInBlock[2])
+{
+    const float16_t centroids[16] = float16_t[16](
+        float16_t(-2.732590), float16_t(-2.069017), float16_t(-1.618046), float16_t(-1.256231),
+        float16_t(-0.942340), float16_t(-0.656759), float16_t(-0.388048), float16_t(-0.128395),
+        float16_t( 0.128395), float16_t( 0.388048), float16_t( 0.656759), float16_t( 0.942340),
+        float16_t( 1.256231), float16_t( 1.618046), float16_t( 2.069017), float16_t( 2.732590)
+    );
+    const uint j = coordInBlock[1];
+    const uint b = uint(bl.block.qs[j / 2]);
+    const uint ci = (j & 1u) == 0u ? (b & 0xFu) : (b >> 4u);
+    const float16_t d = (j < 16u) ? bl.block.d0 : bl.block.d1;
+    return d * centroids[ci];
+}
+
+f16vec4 dequantFuncTQ4_1S_v(const in decodeBufTQ4_1S bl, const in uint blockCoords[2], const in uint coordInBlock[2])
+{
+    const float16_t centroids[16] = float16_t[16](
+        float16_t(-2.732590), float16_t(-2.069017), float16_t(-1.618046), float16_t(-1.256231),
+        float16_t(-0.942340), float16_t(-0.656759), float16_t(-0.388048), float16_t(-0.128395),
+        float16_t( 0.128395), float16_t( 0.388048), float16_t( 0.656759), float16_t( 0.942340),
+        float16_t( 1.256231), float16_t( 1.618046), float16_t( 2.069017), float16_t( 2.732590)
+    );
+    const uint j0 = coordInBlock[1];
+    f16vec4 v;
+    [[unroll]] for (uint k = 0u; k < 4u; ++k) {
+        const uint j = j0 + k;
+        const uint b = uint(bl.block.qs[j / 2]);
+        const uint ci = (j & 1u) == 0u ? (b & 0xFu) : (b >> 4u);
+        const float16_t d = (j < 16u) ? bl.block.d0 : bl.block.d1;
+        v[k] = d * centroids[ci];
+    }
+    return v;
+}
 
 layout(buffer_reference, std430, buffer_reference_align = 4) buffer decodeBufQ2_K {
    readonly block_q2_K block;
@@ -1712,6 +1792,12 @@ f16vec4 dequantFuncTURBO6_0_v(const in decodeBufTURBO6_0 bl, const in uint block
 #elif defined(DATA_A_TQ2_0)
 #define dequantFuncA dequantFuncTQ2_0
 #define dequantFuncA_v dequantFuncTQ2_0_v
+#elif defined(DATA_A_TQ3_1S)
+#define dequantFuncA dequantFuncTQ3_1S
+#define dequantFuncA_v dequantFuncTQ3_1S_v
+#elif defined(DATA_A_TQ4_1S)
+#define dequantFuncA dequantFuncTQ4_1S
+#define dequantFuncA_v dequantFuncTQ4_1S_v
 #elif defined(DATA_A_Q2_K)
 #define dequantFuncA dequantFuncQ2_K
 #define dequantFuncA_v dequantFuncQ2_K_v
