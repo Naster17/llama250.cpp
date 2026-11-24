@@ -730,6 +730,130 @@ vec2 get_dm(uint ib, uint a_offset) {
 }
 #endif
 
+#if defined(DATA_A_TURBO5_0)
+vec2 dequantize(uint ib, uint iqs, uint a_offset) {
+    const float centroids[32] = float[32](
+        -0.288236, -0.237892, -0.204892, -0.179348,
+        -0.158003, -0.139353, -0.122569, -0.107141,
+        -0.092730, -0.079097, -0.066064, -0.053491,
+        -0.041269, -0.029304, -0.017515, -0.005827,
+         0.005827,  0.017515,  0.029304,  0.041269,
+         0.053491,  0.066064,  0.079097,  0.092730,
+         0.107141,  0.122569,  0.139353,  0.158003,
+         0.179348,  0.204892,  0.237892,  0.288236
+    );
+    const uint j0 = iqs;
+    const uint j1 = iqs + 1;
+    const uint mag0 = (uint(data_a[a_offset + ib].qs[j0 / 2]) >> ((j0 % 2) * 4)) & 0xF;
+    const uint mag1 = (uint(data_a[a_offset + ib].qs[j1 / 2]) >> ((j1 % 2) * 4)) & 0xF;
+    const uint neg0 = (uint(data_a[a_offset + ib].qh[j0 / 8]) >> (j0 % 8)) & 0x1;
+    const uint neg1 = (uint(data_a[a_offset + ib].qh[j1 / 8]) >> (j1 % 8)) & 0x1;
+    const uint idx0 = neg0 != 0 ? (15u - mag0) : (16u + mag0);
+    const uint idx1 = neg1 != 0 ? (15u - mag1) : (16u + mag1);
+    return vec2(centroids[idx0], centroids[idx1]);
+}
+vec4 dequantize4(uint ib, uint iqs, uint a_offset) {
+    const float centroids[32] = float[32](
+        -0.288236, -0.237892, -0.204892, -0.179348,
+        -0.158003, -0.139353, -0.122569, -0.107141,
+        -0.092730, -0.079097, -0.066064, -0.053491,
+        -0.041269, -0.029304, -0.017515, -0.005827,
+         0.005827,  0.017515,  0.029304,  0.041269,
+         0.053491,  0.066064,  0.079097,  0.092730,
+         0.107141,  0.122569,  0.139353,  0.158003,
+         0.179348,  0.204892,  0.237892,  0.288236
+    );
+    const uint b0 = uint(data_a[a_offset + ib].qs[iqs / 2    ]);
+    const uint b1 = uint(data_a[a_offset + ib].qs[iqs / 2 + 1]);
+    const uint s  = uint(data_a[a_offset + ib].qh[iqs / 8]);
+    const uint base = iqs & 0x7u;
+    const uint mag0 = (b0     ) & 0xF;
+    const uint mag1 = (b0 >> 4) & 0xF;
+    const uint mag2 = (b1     ) & 0xF;
+    const uint mag3 = (b1 >> 4) & 0xF;
+    const uint neg0 = (s >> (base    )) & 0x1u;
+    const uint neg1 = (s >> (base + 1u)) & 0x1u;
+    const uint neg2 = (s >> (base + 2u)) & 0x1u;
+    const uint neg3 = (s >> (base + 3u)) & 0x1u;
+    const uint idx0 = neg0 != 0 ? (15u - mag0) : (16u + mag0);
+    const uint idx1 = neg1 != 0 ? (15u - mag1) : (16u + mag1);
+    const uint idx2 = neg2 != 0 ? (15u - mag2) : (16u + mag2);
+    const uint idx3 = neg3 != 0 ? (15u - mag3) : (16u + mag3);
+    return vec4(centroids[idx0], centroids[idx1], centroids[idx2], centroids[idx3]);
+}
+vec2 get_dm(uint ib, uint a_offset) {
+    return vec2(float(data_a[a_offset + ib].norm), 0);
+}
+#endif
+
+#if defined(DATA_A_TURBO6_0)
+vec2 dequantize(uint ib, uint iqs, uint a_offset) {
+    const float centroids[64] = float[64](
+        -0.330935, -0.286417, -0.257865, -0.236198,
+        -0.218435, -0.203203, -0.189753, -0.177626,
+        -0.166522, -0.156230, -0.146600, -0.137517,
+        -0.128895, -0.120663, -0.112765, -0.105157,
+        -0.097801, -0.090663, -0.083717, -0.076940,
+        -0.070310, -0.063809, -0.057422, -0.051133,
+        -0.044929, -0.038798, -0.032729, -0.026710,
+        -0.020733, -0.014787, -0.008863, -0.002953,
+         0.002953,  0.008863,  0.014787,  0.020733,
+         0.026710,  0.032729,  0.038798,  0.044929,
+         0.051133,  0.057422,  0.063809,  0.070310,
+         0.076940,  0.083717,  0.090663,  0.097801,
+         0.105157,  0.112765,  0.120663,  0.128895,
+         0.137517,  0.146600,  0.156230,  0.166522,
+         0.177626,  0.189753,  0.203203,  0.218435,
+         0.236198,  0.257865,  0.286417,  0.330935
+    );
+    const uint j0 = iqs;
+    const uint j1 = iqs + 1;
+    const uint lo0 = (uint(data_a[a_offset + ib].qs[j0 / 2]) >> ((j0 % 2) * 4)) & 0xF;
+    const uint lo1 = (uint(data_a[a_offset + ib].qs[j1 / 2]) >> ((j1 % 2) * 4)) & 0xF;
+    const uint hi0 = (uint(data_a[a_offset + ib].qh[j0 / 4]) >> ((j0 % 4) * 2)) & 0x3;
+    const uint hi1 = (uint(data_a[a_offset + ib].qh[j1 / 4]) >> ((j1 % 4) * 2)) & 0x3;
+    const uint idx0 = lo0 | (hi0 << 4);
+    const uint idx1 = lo1 | (hi1 << 4);
+    return vec2(centroids[idx0], centroids[idx1]);
+}
+vec4 dequantize4(uint ib, uint iqs, uint a_offset) {
+    const float centroids[64] = float[64](
+        -0.330935, -0.286417, -0.257865, -0.236198,
+        -0.218435, -0.203203, -0.189753, -0.177626,
+        -0.166522, -0.156230, -0.146600, -0.137517,
+        -0.128895, -0.120663, -0.112765, -0.105157,
+        -0.097801, -0.090663, -0.083717, -0.076940,
+        -0.070310, -0.063809, -0.057422, -0.051133,
+        -0.044929, -0.038798, -0.032729, -0.026710,
+        -0.020733, -0.014787, -0.008863, -0.002953,
+         0.002953,  0.008863,  0.014787,  0.020733,
+         0.026710,  0.032729,  0.038798,  0.044929,
+         0.051133,  0.057422,  0.063809,  0.070310,
+         0.076940,  0.083717,  0.090663,  0.097801,
+         0.105157,  0.112765,  0.120663,  0.128895,
+         0.137517,  0.146600,  0.156230,  0.166522,
+         0.177626,  0.189753,  0.203203,  0.218435,
+         0.236198,  0.257865,  0.286417,  0.330935
+    );
+    const uint b0 = uint(data_a[a_offset + ib].qs[iqs / 2    ]);
+    const uint b1 = uint(data_a[a_offset + ib].qs[iqs / 2 + 1]);
+    const uint h  = uint(data_a[a_offset + ib].qh[iqs / 4]);
+    const uint base = (iqs % 4u) * 2u;
+    const uint lo0 = (b0     ) & 0xF;
+    const uint lo1 = (b0 >> 4) & 0xF;
+    const uint lo2 = (b1     ) & 0xF;
+    const uint lo3 = (b1 >> 4) & 0xF;
+    const uint hi0 = (h >> (base     )) & 0x3u;
+    const uint hi1 = (h >> (base + 2u)) & 0x3u;
+    const uint hi2 = (h >> (base + 4u)) & 0x3u;
+    const uint hi3 = (h >> (base + 6u)) & 0x3u;
+    return vec4(centroids[lo0 | (hi0 << 4)], centroids[lo1 | (hi1 << 4)], centroids[lo2 | (hi2 << 4)], centroids[lo3 | (hi3 << 4)]);
+}
+vec2 get_dm(uint ib, uint a_offset) {
+    return vec2(float(data_a[a_offset + ib].norm), 0);
+}
+#endif
+
 #if defined(DATA_A_TQ3_1S)
 vec2 dequantize(uint ib, uint iqs, uint a_offset) {
     const float centroids[8] = float[8](

@@ -5,7 +5,7 @@
 #extension GL_KHR_shader_subgroup_shuffle : enable
 #include "types.glsl"
 
-#if defined(SET_ROWS) && (defined(DATA_A_TURBO2_0) || defined(DATA_A_TURBO3_0) || defined(DATA_A_TURBO4_0))
+#if defined(SET_ROWS) && (defined(DATA_A_TURBO2_0) || defined(DATA_A_TURBO3_0) || defined(DATA_A_TURBO4_0) || defined(DATA_A_TURBO5_0) || defined(DATA_A_TURBO6_0))
 layout(local_size_x = 128, local_size_y = 1, local_size_z = 1) in;
 const uint BLOCK_SIZE = 128;
 #elif defined(SET_ROWS) && QUANT_K == 1
@@ -745,6 +745,304 @@ void main() {
         for (uint w = 0; w < gl_NumSubgroups; w++) total += sg_acc_t4[w];
         float rn = sqrt(total);
         data_q[db].norm = float16_t((rn > 1e-10) ? (gnrm_t4 / rn) : gnrm_t4);
+    }
+}
+
+#elif defined(SET_ROWS) && defined(DATA_A_TURBO5_0)
+// Mirror of the TURBO3_0 block, adapted for turbo5 (32 centroids, sign-magnitude:
+// 4-bit magnitude nibble + 1-bit sign). WHT tables and reduction structure identical.
+const float TS1_T5[128] = float[128](
+    -1,  1,  1, -1, -1,  1, -1,  1, -1, -1,  1,  1,  1,  1,  1,  1,
+     1, -1,  1, -1,  1, -1, -1,  1,  1,  1, -1,  1,  1, -1, -1, -1,
+    -1,  1,  1, -1,  1,  1, -1,  1, -1,  1,  1, -1, -1,  1, -1,  1,
+     1,  1,  1, -1, -1, -1, -1, -1,  1, -1,  1,  1,  1,  1, -1,  1,
+    -1, -1,  1, -1, -1, -1,  1, -1, -1, -1,  1, -1, -1, -1,  1,  1,
+     1, -1, -1,  1,  1,  1, -1, -1,  1,  1, -1,  1,  1, -1,  1, -1,
+    -1,  1,  1, -1,  1, -1,  1, -1,  1,  1,  1,  1, -1,  1, -1,  1,
+     1, -1,  1,  1, -1, -1, -1, -1, -1,  1,  1, -1,  1,  1, -1,  1
+);
+const float TS2_T5[128] = float[128](
+     1,  1,  1,  1, -1,  1,  1, -1,  1, -1, -1, -1,  1, -1, -1, -1,
+     1,  1, -1, -1,  1, -1,  1, -1,  1, -1, -1,  1, -1,  1,  1,  1,
+     1,  1, -1, -1, -1,  1, -1, -1, -1, -1, -1, -1,  1,  1,  1, -1,
+     1, -1,  1,  1,  1, -1, -1,  1, -1, -1, -1, -1, -1, -1,  1,  1,
+     1, -1,  1, -1, -1, -1, -1,  1, -1,  1, -1,  1, -1, -1,  1,  1,
+    -1,  1, -1,  1,  1, -1,  1, -1, -1, -1, -1,  1, -1, -1,  1, -1,
+     1, -1,  1,  1,  1, -1, -1,  1, -1,  1, -1,  1,  1, -1, -1,  1,
+    -1,  1, -1,  1,  1, -1,  1, -1,  1, -1, -1, -1, -1, -1,  1, -1
+);
+const float TINV_T5 = 0.08838834764831845;  // 1 / sqrt(128)
+const float TC5[32] = float[32](
+    -0.288236, -0.237892, -0.204892, -0.179348,
+    -0.158003, -0.139353, -0.122569, -0.107141,
+    -0.092730, -0.079097, -0.066064, -0.053491,
+    -0.041269, -0.029304, -0.017515, -0.005827,
+     0.005827,  0.017515,  0.029304,  0.041269,
+     0.053491,  0.066064,  0.079097,  0.092730,
+     0.107141,  0.122569,  0.139353,  0.158003,
+     0.179348,  0.204892,  0.237892,  0.288236
+);
+const float TM5[31] = float[31](
+    -0.263064, -0.221392, -0.192120, -0.168675,
+    -0.148678, -0.130961, -0.114855, -0.099935,
+    -0.085914, -0.072580, -0.059778, -0.047380,
+    -0.035287, -0.023410, -0.011671,  0.000000,
+     0.011671,  0.023410,  0.035287,  0.047380,
+     0.059778,  0.072580,  0.085914,  0.099935,
+     0.114855,  0.130961,  0.148678,  0.168675,
+     0.192120,  0.221392,  0.263064
+);
+
+shared float wht_t5[128];
+shared float sg_acc_t5[16];
+shared float gnrm_t5;
+
+void main() {
+    const uint t   = gl_LocalInvocationID.x;
+    const uint g   = gl_WorkGroupID.z * 262144 + gl_WorkGroupID.y * 512 + gl_WorkGroupID.x;
+    const uint gpr = p.ne00 / 128;
+
+    if (gpr == 0) return;
+    if (g >= gpr * p.ne21 * p.ne22 * p.ne23) return;
+
+    uint tmp = g;
+    const uint ig  = tmp % gpr; tmp /= gpr;
+    const uint i01 = tmp % p.ne01; tmp /= p.ne01;
+    const uint i02 = tmp % p.ne02;
+    const uint i03 = tmp / p.ne02;
+
+    if (i01 >= p.ne01 || i02 >= p.ne02 || i03 >= p.ne03) return;
+
+    const uint sb  = src0_idx(ig * 128, i01, i02, i03) + get_aoffset();
+    const uint i1  = data_i[src1_idx(i01, fastmod(i02, p.ne11), fastmod(i03, p.ne12), 0) + get_boffset()] DATA_I_SWIZZLE;
+    const uint db  = dst_idx(ig, i1, i02, i03) + get_doffset();
+
+    wht_t5[t] = data_s[sb + t];
+    barrier();
+
+    float v2 = wht_t5[t] * wht_t5[t];
+    v2 = subgroupAdd(v2);
+    if (gl_SubgroupInvocationID == 0) sg_acc_t5[gl_SubgroupID] = v2;
+    barrier();
+    if (t == 0) {
+        float total = 0.0;
+        for (uint w = 0; w < gl_NumSubgroups; w++) total += sg_acc_t5[w];
+        gnrm_t5 = sqrt(total);
+    }
+    barrier();
+
+    wht_t5[t] *= (gnrm_t5 > 1e-10) ? (1.0 / gnrm_t5) : 0.0;
+    barrier();
+
+    wht_t5[t] *= TS1_T5[t];
+    barrier();
+
+    [[unroll]] for (uint h = 1; h < 128; h *= 2) {
+        if ((t % (2 * h)) < h) {
+            float a = wht_t5[t];
+            float b = wht_t5[t + h];
+            wht_t5[t]     = a + b;
+            wht_t5[t + h] = a - b;
+        }
+        barrier();
+    }
+
+    float rv = wht_t5[t] * TINV_T5 * TS2_T5[t];
+
+    uint idx = 0u;
+    [[unroll]] for (uint i = 0; i < 31; i++) {
+        if (rv >= TM5[i]) idx = i + 1u;
+    }
+
+    // Sign-magnitude: neg ? (15-mag):(16+mag)
+    const uint neg = idx < 16u ? 1u : 0u;
+    const uint mag = neg != 0u ? (15u - idx) : (idx - 16u);
+
+    // Pack qs: 4 elements per byte (magnitude nibbles)
+    uint sg_lane = gl_SubgroupInvocationID;
+    uint qs_byte = 0u;
+    [[unroll]] for (uint k = 0; k < 4; k++) {
+        uint contrib = subgroupShuffle(mag, (sg_lane & ~3u) + k);
+        qs_byte |= (contrib & 0xFu) << (k * 4u);
+    }
+    if (sg_lane % 4u == 0u) {
+        data_q[db].qs[t / 4u] = uint8_t(qs_byte);
+    }
+
+    // Pack sign bits: 8 elements per byte
+    uvec4 ballot = subgroupBallot(neg != 0u);
+    if (sg_lane % 8u == 0u) {
+        uint ballot_word  = sg_lane / 32u;
+        uint byte_in_word = (sg_lane % 32u) / 8u;
+        data_q[db].qh[t / 8u] = uint8_t((ballot[ballot_word] >> (byte_in_word * 8u)) & 0xFFu);
+    }
+
+    float rc = TC5[idx] * TC5[idx];
+    rc = subgroupAdd(rc);
+    if (sg_lane == 0u) sg_acc_t5[gl_SubgroupID] = rc;
+    barrier();
+    if (t == 0u) {
+        float total = 0.0;
+        for (uint w = 0; w < gl_NumSubgroups; w++) total += sg_acc_t5[w];
+        float rn = sqrt(total);
+        data_q[db].norm = float16_t((rn > 1e-10) ? (gnrm_t5 / rn) : gnrm_t5);
+    }
+}
+
+#elif defined(SET_ROWS) && defined(DATA_A_TURBO6_0)
+// Mirror of the TURBO4_0 block, adapted for turbo6 (64 centroids, 4-bit low + 2-bit high).
+const float TS1_T6[128] = float[128](
+    -1,  1,  1, -1, -1,  1, -1,  1, -1, -1,  1,  1,  1,  1,  1,  1,
+     1, -1,  1, -1,  1, -1, -1,  1,  1,  1, -1,  1,  1, -1, -1, -1,
+    -1,  1,  1, -1,  1,  1, -1,  1, -1,  1,  1, -1, -1,  1, -1,  1,
+     1,  1,  1, -1, -1, -1, -1, -1,  1, -1,  1,  1,  1,  1, -1,  1,
+    -1, -1,  1, -1, -1, -1,  1, -1, -1, -1,  1, -1, -1, -1,  1,  1,
+     1, -1, -1,  1,  1,  1, -1, -1,  1,  1, -1,  1,  1, -1,  1, -1,
+    -1,  1,  1, -1,  1, -1,  1, -1,  1,  1,  1,  1, -1,  1, -1,  1,
+     1, -1,  1,  1, -1, -1, -1, -1, -1,  1,  1, -1,  1,  1, -1,  1
+);
+const float TS2_T6[128] = float[128](
+     1,  1,  1,  1, -1,  1,  1, -1,  1, -1, -1, -1,  1, -1, -1, -1,
+     1,  1, -1, -1,  1, -1,  1, -1,  1, -1, -1,  1, -1,  1,  1,  1,
+     1,  1, -1, -1, -1,  1, -1, -1, -1, -1, -1, -1,  1,  1,  1, -1,
+     1, -1,  1,  1,  1, -1, -1,  1, -1, -1, -1, -1, -1, -1,  1,  1,
+     1, -1,  1, -1, -1, -1, -1,  1, -1,  1, -1,  1, -1, -1,  1,  1,
+    -1,  1, -1,  1,  1, -1,  1, -1, -1, -1, -1,  1, -1, -1,  1, -1,
+     1, -1,  1,  1,  1, -1, -1,  1, -1,  1, -1,  1,  1, -1, -1,  1,
+    -1,  1, -1,  1,  1, -1,  1, -1,  1, -1, -1, -1, -1, -1,  1, -1
+);
+const float TINV_T6 = 0.08838834764831845;  // 1 / sqrt(128)
+const float TC6[64] = float[64](
+    -0.330935, -0.286417, -0.257865, -0.236198,
+    -0.218435, -0.203203, -0.189753, -0.177626,
+    -0.166522, -0.156230, -0.146600, -0.137517,
+    -0.128895, -0.120663, -0.112765, -0.105157,
+    -0.097801, -0.090663, -0.083717, -0.076940,
+    -0.070310, -0.063809, -0.057422, -0.051133,
+    -0.044929, -0.038798, -0.032729, -0.026710,
+    -0.020733, -0.014787, -0.008863, -0.002953,
+     0.002953,  0.008863,  0.014787,  0.020733,
+     0.026710,  0.032729,  0.038798,  0.044929,
+     0.051133,  0.057422,  0.063809,  0.070310,
+     0.076940,  0.083717,  0.090663,  0.097801,
+     0.105157,  0.112765,  0.120663,  0.128895,
+     0.137517,  0.146600,  0.156230,  0.166522,
+     0.177626,  0.189753,  0.203203,  0.218435,
+     0.236198,  0.257865,  0.286417,  0.330935
+);
+const float TM6[63] = float[63](
+    -0.308676, -0.272141, -0.247031, -0.227316,
+    -0.210819, -0.196478, -0.183690, -0.172074,
+    -0.161376, -0.151415, -0.142059, -0.133206,
+    -0.124779, -0.116714, -0.108961, -0.101479,
+    -0.094232, -0.087190, -0.080329, -0.073625,
+    -0.067060, -0.060616, -0.054277, -0.048031,
+    -0.041864, -0.035763, -0.029719, -0.023722,
+    -0.017760, -0.011825, -0.005908,  0.000000,
+     0.005908,  0.011825,  0.017760,  0.023722,
+     0.029719,  0.035763,  0.041864,  0.048031,
+     0.054277,  0.060616,  0.067060,  0.073625,
+     0.080329,  0.087190,  0.094232,  0.101479,
+     0.108961,  0.116714,  0.124779,  0.133206,
+     0.142059,  0.151415,  0.161376,  0.172074,
+     0.183690,  0.196478,  0.210819,  0.227316,
+     0.247031,  0.272141,  0.308676
+);
+
+shared float wht_t6[128];
+shared float sg_acc_t6[16];
+shared float gnrm_t6;
+
+void main() {
+    const uint t   = gl_LocalInvocationID.x;
+    const uint g   = gl_WorkGroupID.z * 262144 + gl_WorkGroupID.y * 512 + gl_WorkGroupID.x;
+    const uint gpr = p.ne00 / 128;
+
+    if (gpr == 0) return;
+    if (g >= gpr * p.ne21 * p.ne22 * p.ne23) return;
+
+    uint tmp = g;
+    const uint ig  = tmp % gpr; tmp /= gpr;
+    const uint i01 = tmp % p.ne01; tmp /= p.ne01;
+    const uint i02 = tmp % p.ne02;
+    const uint i03 = tmp / p.ne02;
+
+    if (i01 >= p.ne01 || i02 >= p.ne02 || i03 >= p.ne03) return;
+
+    const uint sb  = src0_idx(ig * 128, i01, i02, i03) + get_aoffset();
+    const uint i1  = data_i[src1_idx(i01, fastmod(i02, p.ne11), fastmod(i03, p.ne12), 0) + get_boffset()] DATA_I_SWIZZLE;
+    const uint db  = dst_idx(ig, i1, i02, i03) + get_doffset();
+
+    wht_t6[t] = data_s[sb + t];
+    barrier();
+
+    float v2 = wht_t6[t] * wht_t6[t];
+    v2 = subgroupAdd(v2);
+    if (gl_SubgroupInvocationID == 0) sg_acc_t6[gl_SubgroupID] = v2;
+    barrier();
+    if (t == 0) {
+        float total = 0.0;
+        for (uint w = 0; w < gl_NumSubgroups; w++) total += sg_acc_t6[w];
+        gnrm_t6 = sqrt(total);
+    }
+    barrier();
+
+    wht_t6[t] *= (gnrm_t6 > 1e-10) ? (1.0 / gnrm_t6) : 0.0;
+    barrier();
+
+    wht_t6[t] *= TS1_T6[t];
+    barrier();
+
+    [[unroll]] for (uint h = 1; h < 128; h *= 2) {
+        if ((t % (2 * h)) < h) {
+            float a = wht_t6[t];
+            float b = wht_t6[t + h];
+            wht_t6[t]     = a + b;
+            wht_t6[t + h] = a - b;
+        }
+        barrier();
+    }
+
+    float rv = wht_t6[t] * TINV_T6 * TS2_T6[t];
+
+    uint idx = 0u;
+    [[unroll]] for (uint i = 0; i < 63; i++) {
+        if (rv >= TM6[i]) idx = i + 1u;
+    }
+
+    const uint lo = idx & 0xFu;
+    const uint hi = (idx >> 4u) & 0x3u;
+
+    // Pack qs: 4 elements per byte (4-bit low nibbles)
+    uint sg_lane = gl_SubgroupInvocationID;
+    uint qs_byte = 0u;
+    [[unroll]] for (uint k = 0; k < 4; k++) {
+        uint contrib = subgroupShuffle(lo, (sg_lane & ~3u) + k);
+        qs_byte |= (contrib & 0xFu) << (k * 4u);
+    }
+    if (sg_lane % 4u == 0u) {
+        data_q[db].qs[t / 4u] = uint8_t(qs_byte);
+    }
+
+    // Pack qh: 4 elements per byte (2-bit high values)
+    uint qh_byte = 0u;
+    [[unroll]] for (uint k = 0; k < 4; k++) {
+        uint contrib = subgroupShuffle(hi, (sg_lane & ~3u) + k);
+        qh_byte |= (contrib & 0x3u) << (k * 2u);
+    }
+    if (sg_lane % 4u == 0u) {
+        data_q[db].qh[t / 4u] = uint8_t(qh_byte);
+    }
+
+    float rc = TC6[idx] * TC6[idx];
+    rc = subgroupAdd(rc);
+    if (sg_lane == 0u) sg_acc_t6[gl_SubgroupID] = rc;
+    barrier();
+    if (t == 0u) {
+        float total = 0.0;
+        for (uint w = 0; w < gl_NumSubgroups; w++) total += sg_acc_t6[w];
+        float rn = sqrt(total);
+        data_q[db].norm = float16_t((rn > 1e-10) ? (gnrm_t6 / rn) : gnrm_t6);
     }
 }
 

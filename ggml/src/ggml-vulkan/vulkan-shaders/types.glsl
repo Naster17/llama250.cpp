@@ -406,6 +406,36 @@ struct block_turbo4_0
 #define A_TYPE block_turbo4_0
 #endif
 
+#define QUANT_K_TURBO5_0 128
+#define QUANT_R_TURBO5_0 1
+struct block_turbo5_0
+{
+    float16_t norm;
+    uint8_t qs[64];     // 4-bit magnitude indices, nibble-packed (2 per byte), 128/2 = 64 bytes
+    uint8_t qh[16];     // sign bits (8 per byte), 128/8 = 16 bytes
+};
+#if defined(DATA_A_TURBO5_0)
+#define QUANT_K QUANT_K_TURBO5_0
+#define QUANT_R QUANT_R_TURBO5_0
+#define QUANT_AUXF 1
+#define A_TYPE block_turbo5_0
+#endif
+
+#define QUANT_K_TURBO6_0 128
+#define QUANT_R_TURBO6_0 1
+struct block_turbo6_0
+{
+    float16_t norm;
+    uint8_t qs[64];     // low 4 bits of 6-bit index, nibble-packed (2 per byte), 128/2 = 64 bytes
+    uint8_t qh[32];     // high 2 bits of 6-bit index (4 per byte), 128/4 = 32 bytes
+};
+#if defined(DATA_A_TURBO6_0)
+#define QUANT_K QUANT_K_TURBO6_0
+#define QUANT_R QUANT_R_TURBO6_0
+#define QUANT_AUXF 1
+#define A_TYPE block_turbo6_0
+#endif
+
 #define QUANT_K_TQ3_1S 32
 #define QUANT_R_TQ3_1S 1
 // Mirrors block_tq3_1s in ggml/src/ggml-common.h: 2 + 2 + 12 = 16 bytes.

@@ -1553,6 +1553,124 @@ f16vec4 dequantFuncTURBO4_0_v(const in decodeBufTURBO4_0 bl, const in uint block
     return f16vec4(norm * vec4(centroids[i0], centroids[i1], centroids[i2], centroids[i3]));
 }
 
+layout(buffer_reference, std430, buffer_reference_align = 2) buffer decodeBufTURBO5_0 {
+   block_turbo5_0 block;
+};
+
+float16_t dequantFuncTURBO5_0(const in decodeBufTURBO5_0 bl, const in uint blockCoords[2], const in uint coordInBlock[2])
+{
+    const float centroids[32] = float[32](
+        -0.288236, -0.237892, -0.204892, -0.179348,
+        -0.158003, -0.139353, -0.122569, -0.107141,
+        -0.092730, -0.079097, -0.066064, -0.053491,
+        -0.041269, -0.029304, -0.017515, -0.005827,
+         0.005827,  0.017515,  0.029304,  0.041269,
+         0.053491,  0.066064,  0.079097,  0.092730,
+         0.107141,  0.122569,  0.139353,  0.158003,
+         0.179348,  0.204892,  0.237892,  0.288236
+    );
+    const float norm = float(bl.block.norm);
+    const uint j = coordInBlock[1];
+    const uint mag = (uint(bl.block.qs[j / 2]) >> ((j % 2) * 4)) & 0xF;
+    const uint neg = (uint(bl.block.qh[j / 8]) >> (j % 8)) & 0x1;
+    const uint idx = neg != 0u ? (15u - mag) : (16u + mag);
+    return float16_t(centroids[idx] * norm);
+}
+
+f16vec4 dequantFuncTURBO5_0_v(const in decodeBufTURBO5_0 bl, const in uint blockCoords[2], const in uint coordInBlock[2])
+{
+    const float centroids[32] = float[32](
+        -0.288236, -0.237892, -0.204892, -0.179348,
+        -0.158003, -0.139353, -0.122569, -0.107141,
+        -0.092730, -0.079097, -0.066064, -0.053491,
+        -0.041269, -0.029304, -0.017515, -0.005827,
+         0.005827,  0.017515,  0.029304,  0.041269,
+         0.053491,  0.066064,  0.079097,  0.092730,
+         0.107141,  0.122569,  0.139353,  0.158003,
+         0.179348,  0.204892,  0.237892,  0.288236
+    );
+    const float norm = float(bl.block.norm);
+    const uint j = coordInBlock[1];
+    const uint b0 = uint(bl.block.qs[j / 2    ]);
+    const uint b1 = uint(bl.block.qs[j / 2 + 1]);
+    const uint s  = uint(bl.block.qh[j / 8]);
+    const uint base = j & 0x7u;
+    const uint m0 = (b0     ) & 0xFu; const uint n0 = (s >> (base    )) & 0x1u;
+    const uint m1 = (b0 >> 4) & 0xFu; const uint n1 = (s >> (base + 1u)) & 0x1u;
+    const uint m2 = (b1     ) & 0xFu; const uint n2 = (s >> (base + 2u)) & 0x1u;
+    const uint m3 = (b1 >> 4) & 0xFu; const uint n3 = (s >> (base + 3u)) & 0x1u;
+    const uint i0 = n0 != 0u ? (15u - m0) : (16u + m0);
+    const uint i1 = n1 != 0u ? (15u - m1) : (16u + m1);
+    const uint i2 = n2 != 0u ? (15u - m2) : (16u + m2);
+    const uint i3 = n3 != 0u ? (15u - m3) : (16u + m3);
+    return f16vec4(norm * vec4(centroids[i0], centroids[i1], centroids[i2], centroids[i3]));
+}
+
+layout(buffer_reference, std430, buffer_reference_align = 2) buffer decodeBufTURBO6_0 {
+   block_turbo6_0 block;
+};
+
+float16_t dequantFuncTURBO6_0(const in decodeBufTURBO6_0 bl, const in uint blockCoords[2], const in uint coordInBlock[2])
+{
+    const float centroids[64] = float[64](
+        -0.330935, -0.286417, -0.257865, -0.236198,
+        -0.218435, -0.203203, -0.189753, -0.177626,
+        -0.166522, -0.156230, -0.146600, -0.137517,
+        -0.128895, -0.120663, -0.112765, -0.105157,
+        -0.097801, -0.090663, -0.083717, -0.076940,
+        -0.070310, -0.063809, -0.057422, -0.051133,
+        -0.044929, -0.038798, -0.032729, -0.026710,
+        -0.020733, -0.014787, -0.008863, -0.002953,
+         0.002953,  0.008863,  0.014787,  0.020733,
+         0.026710,  0.032729,  0.038798,  0.044929,
+         0.051133,  0.057422,  0.063809,  0.070310,
+         0.076940,  0.083717,  0.090663,  0.097801,
+         0.105157,  0.112765,  0.120663,  0.128895,
+         0.137517,  0.146600,  0.156230,  0.166522,
+         0.177626,  0.189753,  0.203203,  0.218435,
+         0.236198,  0.257865,  0.286417,  0.330935
+    );
+    const float norm = float(bl.block.norm);
+    const uint j = coordInBlock[1];
+    const uint lo = (uint(bl.block.qs[j / 2]) >> ((j % 2) * 4)) & 0xF;
+    const uint hi = (uint(bl.block.qh[j / 4]) >> ((j % 4) * 2)) & 0x3;
+    return float16_t(centroids[lo | (hi << 4)] * norm);
+}
+
+f16vec4 dequantFuncTURBO6_0_v(const in decodeBufTURBO6_0 bl, const in uint blockCoords[2], const in uint coordInBlock[2])
+{
+    const float centroids[64] = float[64](
+        -0.330935, -0.286417, -0.257865, -0.236198,
+        -0.218435, -0.203203, -0.189753, -0.177626,
+        -0.166522, -0.156230, -0.146600, -0.137517,
+        -0.128895, -0.120663, -0.112765, -0.105157,
+        -0.097801, -0.090663, -0.083717, -0.076940,
+        -0.070310, -0.063809, -0.057422, -0.051133,
+        -0.044929, -0.038798, -0.032729, -0.026710,
+        -0.020733, -0.014787, -0.008863, -0.002953,
+         0.002953,  0.008863,  0.014787,  0.020733,
+         0.026710,  0.032729,  0.038798,  0.044929,
+         0.051133,  0.057422,  0.063809,  0.070310,
+         0.076940,  0.083717,  0.090663,  0.097801,
+         0.105157,  0.112765,  0.120663,  0.128895,
+         0.137517,  0.146600,  0.156230,  0.166522,
+         0.177626,  0.189753,  0.203203,  0.218435,
+         0.236198,  0.257865,  0.286417,  0.330935
+    );
+    const float norm = float(bl.block.norm);
+    const uint j = coordInBlock[1];
+    const uint b0 = uint(bl.block.qs[j / 2    ]);
+    const uint b1 = uint(bl.block.qs[j / 2 + 1]);
+    const uint h  = uint(bl.block.qh[j / 4]);
+    const uint base = (j % 4u) * 2u;
+    const uint lo0 = (b0     ) & 0xFu; const uint hi0 = (h >> (base     )) & 0x3u;
+    const uint lo1 = (b0 >> 4) & 0xFu; const uint hi1 = (h >> (base + 2u)) & 0x3u;
+    const uint lo2 = (b1     ) & 0xFu; const uint hi2 = (h >> (base + 4u)) & 0x3u;
+    const uint lo3 = (b1 >> 4) & 0xFu; const uint hi3 = (h >> (base + 6u)) & 0x3u;
+    return f16vec4(norm * vec4(centroids[lo0 | (hi0 << 4)], centroids[lo1 | (hi1 << 4)],
+                               centroids[lo2 | (hi2 << 4)], centroids[lo3 | (hi3 << 4)]));
+}
+
 #if defined(DATA_A_TURBO2_0)
 #define dequantFuncA dequantFuncTURBO2_0
 #define dequantFuncA_v dequantFuncTURBO2_0_v
@@ -1562,6 +1680,12 @@ f16vec4 dequantFuncTURBO4_0_v(const in decodeBufTURBO4_0 bl, const in uint block
 #elif defined(DATA_A_TURBO4_0)
 #define dequantFuncA dequantFuncTURBO4_0
 #define dequantFuncA_v dequantFuncTURBO4_0_v
+#elif defined(DATA_A_TURBO5_0)
+#define dequantFuncA dequantFuncTURBO5_0
+#define dequantFuncA_v dequantFuncTURBO5_0_v
+#elif defined(DATA_A_TURBO6_0)
+#define dequantFuncA dequantFuncTURBO6_0
+#define dequantFuncA_v dequantFuncTURBO6_0_v
 #elif defined(DATA_A_Q1_0)
 #define dequantFuncA dequantFuncQ1_0
 #define dequantFuncA_v dequantFuncQ1_0_v

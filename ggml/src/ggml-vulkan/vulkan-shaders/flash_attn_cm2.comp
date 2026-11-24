@@ -50,11 +50,11 @@ float16_t faDecodeK(const decodeBufFA_K bl_in, const uint blockCoords[2], const 
         case FA_TYPE_TURBO3_0: return dequantFuncTURBO3_0(decodeBufTURBO3_0(bl_in), blockCoords, coordInBlock);
         case FA_TYPE_TURBO2_0: return dequantFuncTURBO2_0(decodeBufTURBO2_0(bl_in), blockCoords, coordInBlock);
         case FA_TYPE_TURBO4_0: return dequantFuncTURBO4_0(decodeBufTURBO4_0(bl_in), blockCoords, coordInBlock);
+        case FA_TYPE_TURBO5_0: return dequantFuncTURBO5_0(decodeBufTURBO5_0(bl_in), blockCoords, coordInBlock);
+        case FA_TYPE_TURBO6_0: return dequantFuncTURBO6_0(decodeBufTURBO6_0(bl_in), blockCoords, coordInBlock);
         default: return float16_t(0);
     }
-}
-
-float16_t faDecodeV(const decodeBufFA_V bl_in, const uint blockCoords[2], const uint coordInBlock[2]) {
+}float16_t faDecodeV(const decodeBufFA_V bl_in, const uint blockCoords[2], const uint coordInBlock[2]) {
     switch (FaTypeV) {
         case FA_TYPE_F32:  return dequantFuncF32 (decodeBufF32 (bl_in), blockCoords, coordInBlock);
         case FA_TYPE_Q4_0: return dequantFuncQ4_0(decodeBufQ4_0(bl_in), blockCoords, coordInBlock);
@@ -66,11 +66,11 @@ float16_t faDecodeV(const decodeBufFA_V bl_in, const uint blockCoords[2], const 
         case FA_TYPE_TURBO3_0: return dequantFuncTURBO3_0(decodeBufTURBO3_0(bl_in), blockCoords, coordInBlock);
         case FA_TYPE_TURBO2_0: return dequantFuncTURBO2_0(decodeBufTURBO2_0(bl_in), blockCoords, coordInBlock);
         case FA_TYPE_TURBO4_0: return dequantFuncTURBO4_0(decodeBufTURBO4_0(bl_in), blockCoords, coordInBlock);
+        case FA_TYPE_TURBO5_0: return dequantFuncTURBO5_0(decodeBufTURBO5_0(bl_in), blockCoords, coordInBlock);
+        case FA_TYPE_TURBO6_0: return dequantFuncTURBO6_0(decodeBufTURBO6_0(bl_in), blockCoords, coordInBlock);
         default: return float16_t(0);
     }
-}
-
-// V=4 vector decode for K/V; dispatches to per-format _v decoders.
+}// V=4 vector decode for K/V; dispatches to per-format _v decoders.
 f16vec4 faDecodeKVector(const decodeBufFA_K bl_in, const uint blockCoords[2], const uint coordInBlock[2]) {
     switch (FaTypeK) {
         case FA_TYPE_F32: return f16vec4(decodeBufF32(bl_in).block);
@@ -83,6 +83,8 @@ f16vec4 faDecodeKVector(const decodeBufFA_K bl_in, const uint blockCoords[2], co
         case FA_TYPE_TURBO3_0: return dequantFuncTURBO3_0_v(decodeBufTURBO3_0(bl_in), blockCoords, coordInBlock);
         case FA_TYPE_TURBO2_0: return dequantFuncTURBO2_0_v(decodeBufTURBO2_0(bl_in), blockCoords, coordInBlock);
         case FA_TYPE_TURBO4_0: return dequantFuncTURBO4_0_v(decodeBufTURBO4_0(bl_in), blockCoords, coordInBlock);
+        case FA_TYPE_TURBO5_0: return dequantFuncTURBO5_0_v(decodeBufTURBO5_0(bl_in), blockCoords, coordInBlock);
+        case FA_TYPE_TURBO6_0: return dequantFuncTURBO6_0_v(decodeBufTURBO6_0(bl_in), blockCoords, coordInBlock);
         default: return f16vec4(0);
     }
 }
@@ -99,6 +101,8 @@ f16vec4 faDecodeVVector(const decodeBufFA_V bl_in, const uint blockCoords[2], co
         case FA_TYPE_TURBO3_0: return dequantFuncTURBO3_0_v(decodeBufTURBO3_0(bl_in), blockCoords, coordInBlock);
         case FA_TYPE_TURBO2_0: return dequantFuncTURBO2_0_v(decodeBufTURBO2_0(bl_in), blockCoords, coordInBlock);
         case FA_TYPE_TURBO4_0: return dequantFuncTURBO4_0_v(decodeBufTURBO4_0(bl_in), blockCoords, coordInBlock);
+        case FA_TYPE_TURBO5_0: return dequantFuncTURBO5_0_v(decodeBufTURBO5_0(bl_in), blockCoords, coordInBlock);
+        case FA_TYPE_TURBO6_0: return dequantFuncTURBO6_0_v(decodeBufTURBO6_0(bl_in), blockCoords, coordInBlock);
         default: return f16vec4(0);
     }
 }

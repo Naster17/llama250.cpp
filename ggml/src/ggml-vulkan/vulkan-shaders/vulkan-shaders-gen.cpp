@@ -680,6 +680,7 @@ void matmul_shaders(bool fp16, MatMulIdType matmul_id_type, bool coopmat, bool c
             string_to_spv(shader_name + "_quant_f32" + dot2_sfx, source_name, merge_maps(merge_maps(base_dict, quant_float_type_dict), {{"MULMAT_QUANT", "1"}, {"LOAD_VEC_B", load_vec}, {"B_TYPE", aligned_b_type_f32}, {"B_TYPE_SCALAR", "float"}, {"B_TYPEV4", "vec4"}, {"D_TYPE", "float"}}), fp16, coopmat, coopmat2, f16acc);
         }
     }
+
 }
 
 void process_shaders() {
@@ -866,6 +867,8 @@ void process_shaders() {
         merge_maps(base_dict, {{"MUL_MAT_ID", "1"}, {"DATA_A_TQ3_1S", "1"}, {"B_TYPE", "float"}, {"B_TYPEV2", "vec2"}, {"B_TYPEV4", "vec4"}, {"D_TYPE", "float"}}));
     string_to_spv("dequant_tq3_1s", "dequant_tq3_1s.comp",
         merge_maps(base_dict, {{"DATA_A_TQ3_1S", "1"}, {"D_TYPE", "float16_t"}}));
+    string_to_spv("get_rows_tq3_1s", "get_rows_quant.comp", merge_maps(base_dict, {{"TEMP_TYPE", "FLOAT_TYPE"}, {"DATA_A_TQ3_1S", "1"}, {"B_TYPE", "int"}, {"D_TYPE", "float16_t"}}));
+    string_to_spv("get_rows_tq3_1s_f32", "get_rows_quant.comp", merge_maps(base_dict, {{"TEMP_TYPE", "FLOAT_TYPE"}, {"DATA_A_TQ3_1S", "1"}, {"B_TYPE", "int"}, {"D_TYPE", "float"}}));
 
     string_to_spv("mul_mat_vec_tq4_1s_f32_f32", "mul_mat_vec_tq4_1s.comp",
         merge_maps(base_dict, {{"DATA_A_TQ4_1S", "1"}, {"B_TYPE", "float"}, {"B_TYPEV2", "vec2"}, {"B_TYPEV4", "vec4"}, {"D_TYPE", "float"}}));
@@ -875,6 +878,8 @@ void process_shaders() {
         merge_maps(base_dict, {{"MUL_MAT_ID", "1"}, {"DATA_A_TQ4_1S", "1"}, {"B_TYPE", "float"}, {"B_TYPEV2", "vec2"}, {"B_TYPEV4", "vec4"}, {"D_TYPE", "float"}}));
     string_to_spv("dequant_tq4_1s", "dequant_tq4_1s.comp",
         merge_maps(base_dict, {{"DATA_A_TQ4_1S", "1"}, {"D_TYPE", "float16_t"}}));
+    string_to_spv("get_rows_tq4_1s", "get_rows_quant.comp", merge_maps(base_dict, {{"TEMP_TYPE", "FLOAT_TYPE"}, {"DATA_A_TQ4_1S", "1"}, {"B_TYPE", "int"}, {"D_TYPE", "float16_t"}}));
+    string_to_spv("get_rows_tq4_1s_f32", "get_rows_quant.comp", merge_maps(base_dict, {{"TEMP_TYPE", "FLOAT_TYPE"}, {"DATA_A_TQ4_1S", "1"}, {"B_TYPE", "int"}, {"D_TYPE", "float"}}));
 
     // TurboQuant KV-cache types (KV-only, not in type_names)
     string_to_spv("dequant_turbo2_0", "dequant_turbo2_0.comp", merge_maps(base_dict, {{"DATA_A_TURBO2_0", "1"}, {"D_TYPE", "float16_t"}}));
@@ -888,6 +893,14 @@ void process_shaders() {
     string_to_spv("dequant_turbo4_0", "dequant_turbo4_0.comp", merge_maps(base_dict, {{"DATA_A_TURBO4_0", "1"}, {"D_TYPE", "float16_t"}}));
     string_to_spv("get_rows_turbo4_0", "get_rows_quant.comp", merge_maps(base_dict, {{"TEMP_TYPE", "FLOAT_TYPE"}, {"DATA_A_TURBO4_0", "1"}, {"B_TYPE", "int"}, {"D_TYPE", "float16_t"}}));
     string_to_spv("get_rows_turbo4_0_f32", "get_rows_quant.comp", merge_maps(base_dict, {{"TEMP_TYPE", "FLOAT_TYPE"}, {"DATA_A_TURBO4_0", "1"}, {"B_TYPE", "int"}, {"D_TYPE", "float"}}));
+
+    string_to_spv("dequant_turbo5_0", "dequant_turbo5_0.comp", merge_maps(base_dict, {{"DATA_A_TURBO5_0", "1"}, {"D_TYPE", "float16_t"}}));
+    string_to_spv("get_rows_turbo5_0", "get_rows_quant.comp", merge_maps(base_dict, {{"TEMP_TYPE", "FLOAT_TYPE"}, {"DATA_A_TURBO5_0", "1"}, {"B_TYPE", "int"}, {"D_TYPE", "float16_t"}}));
+    string_to_spv("get_rows_turbo5_0_f32", "get_rows_quant.comp", merge_maps(base_dict, {{"TEMP_TYPE", "FLOAT_TYPE"}, {"DATA_A_TURBO5_0", "1"}, {"B_TYPE", "int"}, {"D_TYPE", "float"}}));
+
+    string_to_spv("dequant_turbo6_0", "dequant_turbo6_0.comp", merge_maps(base_dict, {{"DATA_A_TURBO6_0", "1"}, {"D_TYPE", "float16_t"}}));
+    string_to_spv("get_rows_turbo6_0", "get_rows_quant.comp", merge_maps(base_dict, {{"TEMP_TYPE", "FLOAT_TYPE"}, {"DATA_A_TURBO6_0", "1"}, {"B_TYPE", "int"}, {"D_TYPE", "float16_t"}}));
+    string_to_spv("get_rows_turbo6_0_f32", "get_rows_quant.comp", merge_maps(base_dict, {{"TEMP_TYPE", "FLOAT_TYPE"}, {"DATA_A_TURBO6_0", "1"}, {"B_TYPE", "int"}, {"D_TYPE", "float"}}));
 
     string_to_spv("tq_rotate_act", "tq_rotate_act.comp", {});
     string_to_spv("turbo_wht", "turbo_wht.comp", {});
@@ -947,12 +960,12 @@ void process_shaders() {
         string_to_spv("cpy_" + t + "_f32", "copy_from_quant.comp", {{"DATA_A_" + to_uppercase(t), "1"}, {"D_TYPE", "float"}, {"FLOAT_TYPE", "float"}});
     }
     // TurboQuant KV cache types: copy-from-quant only via cpy; set_rows handles quantization
-    for (std::string t : {"turbo2_0", "turbo3_0", "turbo4_0"}) {
+    for (std::string t : {"turbo2_0", "turbo3_0", "turbo4_0", "turbo5_0", "turbo6_0"}) {
         string_to_spv("cpy_" + t + "_f32", "copy_from_quant.comp", {{"DATA_A_" + to_uppercase(t), "1"}, {"D_TYPE", "float"}, {"FLOAT_TYPE", "float"}});
     }
 
     for (auto src : {std::pair{"f32", "float"}, std::pair{"f16", "float16_t"}}) {
-        for (std::string dst : {"f32", "f16", "bf16", "q1_0", "q2_0", "q4_0", "q4_1", "q5_0", "q5_1", "q8_0", "iq4_nl", "turbo2_0", "turbo3_0", "turbo4_0"}) {
+        for (std::string dst : {"f32", "f16", "bf16", "q1_0", "q2_0", "q4_0", "q4_1", "q5_0", "q5_1", "q8_0", "iq4_nl", "turbo2_0", "turbo3_0", "turbo4_0", "turbo5_0", "turbo6_0"}) {
             string_to_spv("set_rows_" + std::string(src.first) + "_" + dst + "_i32", "copy_to_quant.comp", {{"SET_ROWS", "1"}, {"DATA_A_" + to_uppercase(dst), "1"}, {"B_TYPE", "uint"}, {"B_SIZE", "32"}, {"S_TYPE", src.second}, {"D_TYPE", "float"}, {"FLOAT_TYPE", "float"}});
             string_to_spv("set_rows_" + std::string(src.first) + "_" + dst + "_i64", "copy_to_quant.comp", {{"SET_ROWS", "1"}, {"DATA_A_" + to_uppercase(dst), "1"}, {"B_TYPE", "uvec2"}, {"B_SIZE", "64"}, {"S_TYPE", src.second}, {"D_TYPE", "float"}, {"FLOAT_TYPE", "float"}});
         }

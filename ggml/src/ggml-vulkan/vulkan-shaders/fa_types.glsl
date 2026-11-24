@@ -20,6 +20,8 @@ uint fa_block_elems(uint ty) {
         case GGML_TYPE_TURBO2_0: return 128u;
         case GGML_TYPE_TURBO3_0: return 128u;
         case GGML_TYPE_TURBO4_0: return 128u;
+        case GGML_TYPE_TURBO5_0: return 128u;
+        case GGML_TYPE_TURBO6_0: return 128u;
         default:           return 1u;
     }
 }
@@ -58,5 +60,7 @@ bool fa_type_needs_shmem(uint ty) {
 #define FA_TYPE_TURBO2_0 44u
 #define FA_TYPE_TURBO3_0 45u
 #define FA_TYPE_TURBO4_0 46u
+#define FA_TYPE_TURBO5_0 47u
+#define FA_TYPE_TURBO6_0 48u
 
 #endif // !defined(GGML_FA_TYPES_COMP)
