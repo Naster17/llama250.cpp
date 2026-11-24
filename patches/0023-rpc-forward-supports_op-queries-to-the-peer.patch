@@ -1,0 +1,191 @@
+From 434b08557b5906c5542e9a9237ef992d02ba0971 Mon Sep 17 00:00:00 2001
+From: Naster17 <naster17.dev@gmail.com>
+Date: Sun, 22 Nov 2026 00:48:36 +0100
+Subject: [PATCH] rpc : forward supports_op queries to the peer
+
+Assisted-by: omp
+---
+ ggml/include/ggml-rpc.h        |   2 +-
+ ggml/src/ggml-rpc/ggml-rpc.cpp | 110 +++++++++++++++++++++++++++++++--
+ 2 files changed, 107 insertions(+), 5 deletions(-)
+
+diff --git a/ggml/include/ggml-rpc.h b/ggml/include/ggml-rpc.h
+index 792de04ab..5f1444563 100644
+--- a/ggml/include/ggml-rpc.h
++++ b/ggml/include/ggml-rpc.h
+@@ -8,7 +8,7 @@ extern "C" {
+ 
+ #define RPC_PROTO_MAJOR_VERSION    10
+ #define RPC_PROTO_MINOR_VERSION    0
+-#define RPC_PROTO_PATCH_VERSION    2
++#define RPC_PROTO_PATCH_VERSION    3
+ 
+ #ifdef  __cplusplus
+ static_assert(GGML_OP_COUNT == 102, "GGML_OP_COUNT has changed - update RPC_PROTO_PATCH_VERSION");
+diff --git a/ggml/src/ggml-rpc/ggml-rpc.cpp b/ggml/src/ggml-rpc/ggml-rpc.cpp
+index a0615796e..8f6d6424b 100644
+--- a/ggml/src/ggml-rpc/ggml-rpc.cpp
++++ b/ggml/src/ggml-rpc/ggml-rpc.cpp
+@@ -79,6 +79,7 @@ enum rpc_cmd {
+     RPC_CMD_COMM_INIT,
+     RPC_CMD_COMM_ALLREDUCE,
+     RPC_CMD_COMM_FREE,
++    RPC_CMD_SUPPORTS_OP,
+     RPC_CMD_NONE,
+     RPC_CMD_COUNT,
+ };
+@@ -110,6 +111,7 @@ static const char * rpc_cmd_name(enum rpc_cmd cmd) {
+         case RPC_CMD_COMM_INIT:         return "COMM_INIT";
+         case RPC_CMD_COMM_ALLREDUCE:    return "COMM_ALLREDUCE";
+         case RPC_CMD_COMM_FREE:         return "COMM_FREE";
++        case RPC_CMD_SUPPORTS_OP:   return "SUPPORTS_OP";
+         case RPC_CMD_NONE:              return "NONE";
+         default:                        return "UNKNOWN";
+     }
+@@ -153,6 +155,16 @@ struct rpc_msg_get_alloc_size_rsp {
+     uint64_t alloc_size;
+ };
+ 
++struct rpc_msg_supports_op_req {
++    uint32_t   device;
++    rpc_tensor tensor;
++    rpc_tensor srcs[GGML_MAX_SRC];
++};
++
++struct rpc_msg_supports_op_rsp {
++    uint32_t result;
++};
++
+ struct rpc_msg_init_tensor_req {
+     rpc_tensor tensor;
+ };
+@@ -1580,6 +1592,7 @@ public:
+     bool comm_free(const rpc_msg_comm_free_req & request);
+     bool init_tensor(const rpc_msg_init_tensor_req & request);
+     bool get_alloc_size(const rpc_msg_get_alloc_size_req & request, rpc_msg_get_alloc_size_rsp & response);
++    bool supports_op(const rpc_msg_supports_op_req & request, rpc_msg_supports_op_rsp & response);
+     bool get_device_memory(const rpc_msg_get_device_memory_req & request, rpc_msg_get_device_memory_rsp & response);
+ 
+     struct stored_graph {
+@@ -1683,6 +1696,33 @@ bool rpc_server::get_alloc_size(const rpc_msg_get_alloc_size_req & request, rpc_
+     return true;
+ }
+ 
++bool rpc_server::supports_op(const rpc_msg_supports_op_req & request, rpc_msg_supports_op_rsp & response) {
++    uint32_t dev_id = request.device;
++    if (dev_id >= backends.size()) {
++        return false;
++    }
++    struct ggml_init_params params {
++        /*.mem_size   =*/ ggml_tensor_overhead()*(1 + GGML_MAX_SRC),
++        /*.mem_buffer =*/ NULL,
++        /*.no_alloc   =*/ true,
++    };
++    ggml_context_ptr ctx_ptr { ggml_init(params) };
++    GGML_ASSERT(ctx_ptr != nullptr);
++    ggml_context * ctx = ctx_ptr.get();
++    ggml_tensor * tensor = deserialize_tensor(ctx, &request.tensor);
++    if (tensor == nullptr) {
++        LOG_ERROR("Null tensor pointer passed to server supports_op function.\n");
++        return false;
++    }
++    for (int i = 0; i < GGML_MAX_SRC; i++) {
++        if (request.srcs[i].id != 0) {
++            tensor->src[i] = deserialize_tensor(ctx, &request.srcs[i]);
++        }
++    }
++    response.result = ggml_backend_dev_supports_op(ggml_backend_get_device(backends[dev_id]), tensor) ? 1 : 0;
++    return true;
++}
++
+ bool rpc_server::alloc_buffer(const rpc_msg_alloc_buffer_req & request, rpc_msg_alloc_buffer_rsp & response) {
+     uint32_t dev_id = request.device;
+     if (dev_id >= backends.size()) {
+@@ -2928,6 +2968,20 @@ static void rpc_serve_client(const std::vector<ggml_backend_t> & backends, const
+                 }
+                 break;
+             }
++            case RPC_CMD_SUPPORTS_OP: {
++                rpc_msg_supports_op_req request;
++                if (!recv_msg(sock, &request, sizeof(request))) {
++                    return;
++                }
++                rpc_msg_supports_op_rsp response;
++                if (!server.supports_op(request, response)) {
++                    return;
++                }
++                if (!send_msg(sock, &response, sizeof(response))) {
++                    return;
++                }
++                break;
++            }
+             case RPC_CMD_GET_ALIGNMENT: {
+                 rpc_msg_get_alignment_req request;
+                 if (!recv_msg(sock, &request, sizeof(request))) {
+@@ -3288,11 +3342,59 @@ static ggml_backend_buffer_type_t ggml_backend_rpc_device_get_buffer_type(ggml_b
+     GGML_UNUSED(dev);
+ }
+ 
++// cache key from the op signature only: data pointers and names do not affect support
++static uint64_t rpc_supports_op_key(uint32_t device, const ggml_tensor * op) {
++    uint64_t h = fnv_hash((const uint8_t *)&device, sizeof(device));
++    const ggml_tensor * ts[1 + GGML_MAX_SRC];
++    int n = 0;
++    ts[n++] = op;
++    for (int i = 0; i < GGML_MAX_SRC; i++) {
++        if (op->src[i] != nullptr) {
++            ts[n++] = op->src[i];
++        }
++    }
++    for (int i = 0; i < n; i++) {
++        const ggml_tensor * t = ts[i];
++        h = fnv_hash((const uint8_t *)&t->type, sizeof(t->type), h);
++        h = fnv_hash((const uint8_t *)&t->op, sizeof(t->op), h);
++        h = fnv_hash((const uint8_t *)t->op_params, sizeof(t->op_params), h);
++        h = fnv_hash((const uint8_t *)t->ne, sizeof(t->ne), h);
++        h = fnv_hash((const uint8_t *)t->nb, sizeof(t->nb), h);
++        h = fnv_hash((const uint8_t *)&t->flags, sizeof(t->flags), h);
++    }
++    return h;
++}
++
+ static bool ggml_backend_rpc_device_supports_op(ggml_backend_dev_t dev, const struct ggml_tensor * op) {
+-    GGML_UNUSED(dev);
+-    GGML_UNUSED(op);
+-    //TODO: call the remote backend and cache the results
+-    return true;
++    ggml_backend_rpc_device_context * dev_ctx = (ggml_backend_rpc_device_context *)dev->context;
++    auto dispatcher = get_dispatcher(dev_ctx->endpoint);
++    if (dispatcher == nullptr) {
++        return false;
++    }
++    const uint64_t key = rpc_supports_op_key(dev_ctx->device, op);
++    static std::mutex cache_mutex;
++    static std::unordered_map<uint64_t, bool> cache;
++    {
++        std::lock_guard<std::mutex> lock(cache_mutex);
++        auto it = cache.find(key);
++        if (it != cache.end()) {
++            return it->second;
++        }
++    }
++    auto request = std::make_shared<rpc_msg_supports_op_req>();
++    request->device = dev_ctx->device;
++    request->tensor = serialize_tensor(op);
++    for (int i = 0; i < GGML_MAX_SRC; i++) {
++        request->srcs[i] = serialize_tensor(op->src[i]);
++    }
++    rpc_msg_supports_op_rsp response;
++    dispatcher->send(RPC_CMD_SUPPORTS_OP, request, sizeof(*request), nullptr, 0, &response, sizeof(response));
++    const bool result = response.result != 0;
++    {
++        std::lock_guard<std::mutex> lock(cache_mutex);
++        cache[key] = result;
++    }
++    return result;
+ }
+ 
+ static bool ggml_backend_rpc_device_supports_buft(ggml_backend_dev_t dev, ggml_backend_buffer_type_t buft) {
+-- 
+2.56.1
+

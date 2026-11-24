@@ -1,0 +1,27 @@
+From 5e5baa3ac7074d9d29e96ecff0ef17f90f2ff5e4 Mon Sep 17 00:00:00 2001
+From: Naster17 <naster17.dev@gmail.com>
+Date: Sun, 22 Nov 2026 01:19:20 +0100
+Subject: [PATCH] llama : make SITU gate/up contiguous for Vulkan SCALE
+
+Assisted-by: omp
+---
+ src/llama-graph.cpp | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/src/llama-graph.cpp b/src/llama-graph.cpp
+index 1bd3f8d0f..c1be2280b 100644
+--- a/src/llama-graph.cpp
++++ b/src/llama-graph.cpp
+@@ -2604,6 +2604,9 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
+                 {
+                     // situ(gate, up) = beta*tanh(gate/beta)*sigmoid(gate) * lb*tanh(up/lb)
+                     GGML_ASSERT(has_gate);
++                    // gate/up are strided views of the merged gate_up output; Vulkan SCALE needs contiguous inputs
++                    cur = ggml_cont(ctx0, cur);
++                    up  = ggml_cont(ctx0, up);
+                     const float beta = hparams.situ_beta;
+                     const float lb   = hparams.situ_linear_beta;
+ 
+-- 
+2.56.1
+

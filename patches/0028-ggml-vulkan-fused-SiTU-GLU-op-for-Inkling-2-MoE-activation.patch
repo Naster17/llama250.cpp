@@ -1,0 +1,457 @@
+From 5d89be2c0b0cae30db061245437d414e416355f0 Mon Sep 17 00:00:00 2001
+From: Naster17 <naster17.dev@gmail.com>
+Date: Sun, 22 Nov 2026 02:23:30 +0100
+Subject: [PATCH] ggml, vulkan : fused SiTU GLU op for Inkling-2 MoE activation
+
+Assisted-by: omp
+---
+ ggml/include/ggml.h                           |   9 ++
+ ggml/src/ggml-cpu/ggml-cpu.c                  |   1 +
+ ggml/src/ggml-cpu/ops.cpp                     | 150 ++++++++++++++++++
+ ggml/src/ggml-vulkan/ggml-vulkan.cpp          |   3 +
+ ggml/src/ggml-vulkan/vulkan-shaders/situ.comp |  13 ++
+ .../vulkan-shaders/vulkan-shaders-gen.cpp     |   2 +-
+ ggml/src/ggml.c                               |  19 ++-
+ src/llama-graph.cpp                           |  18 +--
+ tests/test-backend-ops.cpp                    |  74 ++++++++-
+ 9 files changed, 275 insertions(+), 14 deletions(-)
+ create mode 100644 ggml/src/ggml-vulkan/vulkan-shaders/situ.comp
+
+diff --git a/ggml/include/ggml.h b/ggml/include/ggml.h
+index e1c18860e..956633d08 100644
+--- a/ggml/include/ggml.h
++++ b/ggml/include/ggml.h
+@@ -473,6 +473,7 @@ extern "C" {
+         GGML_GLU_OP_GEGLU_ERF,
+         GGML_GLU_OP_GEGLU_QUICK,
+         GGML_GLU_OP_SWIGLU_CLAMP,
++        GGML_GLU_OP_SITU,
+ 
+         GGML_GLU_OP_COUNT,
+     };
+@@ -1200,6 +1201,14 @@ extern "C" {
+             float                 alpha,
+             float                 limit);
+ 
++    // SiTU (Inkling-2): beta*tanh(a/beta)*sigmoid(a) * lb*tanh(b/lb); beta, lb > 0
++    GGML_API struct ggml_tensor * ggml_situ(
++            struct ggml_context * ctx,
++            struct ggml_tensor  * a,
++            struct ggml_tensor  * b,
++            float                 beta,
++            float                 lb);
++
+     GGML_API struct ggml_tensor * ggml_swiglu_clamp(
+             struct ggml_context * ctx,
+             struct ggml_tensor  * a,
+diff --git a/ggml/src/ggml-cpu/ggml-cpu.c b/ggml/src/ggml-cpu/ggml-cpu.c
+index 32e2b67f5..78169e7b4 100644
+--- a/ggml/src/ggml-cpu/ggml-cpu.c
++++ b/ggml/src/ggml-cpu/ggml-cpu.c
+@@ -2392,6 +2392,7 @@ static int ggml_get_n_tasks(struct ggml_tensor * node, int n_threads) {
+                 case GGML_GLU_OP_GEGLU_ERF:
+                 case GGML_GLU_OP_GEGLU_QUICK:
+                 case GGML_GLU_OP_SWIGLU_CLAMP:
++                case GGML_GLU_OP_SITU:
+                     {
+                         n_tasks = n_threads;
+                     } break;
+diff --git a/ggml/src/ggml-cpu/ops.cpp b/ggml/src/ggml-cpu/ops.cpp
+index 8509cbd79..343c8d4cd 100644
+--- a/ggml/src/ggml-cpu/ops.cpp
++++ b/ggml/src/ggml-cpu/ops.cpp
+@@ -3573,6 +3573,152 @@ static void ggml_compute_forward_swiglu_oai(
+     }
+ }
+ 
++// ggml_compute_forward_situ
++
++static void ggml_compute_forward_situ_f32(
++        const ggml_compute_params * params,
++        ggml_tensor * dst) {
++
++    const ggml_tensor * src0 = dst->src[0];
++    const ggml_tensor * src1 = dst->src[1];
++    char * src0_d = (char *) src0->data;
++    char * src1_d = (char *) (src1 ? src1->data : src0->data);
++    const size_t src0_o = src0->nb[1];
++    const size_t src1_o = src1 ? src1->nb[1] : src0->nb[1];
++
++    GGML_ASSERT(ggml_is_contiguous_1(src0));
++    GGML_ASSERT(ggml_is_contiguous_1(dst));
++
++    if (src1) {
++        GGML_ASSERT(ggml_is_contiguous_1(src1));
++        GGML_ASSERT(src0->type == src1->type);
++    }
++
++    const int ith = params->ith;
++    const int nth = params->nth;
++
++    const int nc = src1 ? src0->ne[0] : src0->ne[0] / 2;
++    const int nr = ggml_nrows(src0);
++
++    GGML_ASSERT(dst->ne[0] == nc);
++    GGML_ASSERT(ggml_nrows(dst) == nr);
++
++    const int32_t swapped = ggml_get_op_params_i32(dst, 1);
++    const float beta = ggml_get_op_params_f32(dst, 2);
++    const float lb   = ggml_get_op_params_f32(dst, 3);
++
++    const int dr = (nr + nth - 1)/nth;
++    const int ir0 = dr*ith;
++    const int ir1 = MIN(ir0 + dr, nr);
++
++    for (int i1 = ir0; i1 < ir1; i1++) {
++        float * src0_p = (float *) (src0_d + i1*src0_o);
++        float * src1_p = (float *) (src1_d + i1*src1_o);
++        float * dst_p  = (float *) ((char *) dst->data + i1*(dst->nb[1]));
++
++        if (!src1) {
++            src0_p += swapped ? nc : 0;
++            src1_p += swapped ? 0 : nc;
++        }
++
++        for (int k = 0; k < nc; k++) {
++            const float g = src0_p[k];
++            const float u = src1_p[k];
++            const float ga = beta * tanhf(g / beta) / (1.0f + expf(-g));
++            const float gu = lb * tanhf(u / lb);
++            dst_p[k] = ga * gu;
++        }
++    }
++}
++
++static float situ_to_float(ggml_fp16_t v) { return ggml_fp16_to_fp32(v); }
++static float situ_to_float(ggml_bf16_t v) { return ggml_bf16_to_fp32(v); }
++static ggml_fp16_t situ_from_float(float v, ggml_fp16_t *) { return ggml_fp32_to_fp16(v); }
++static ggml_bf16_t situ_from_float(float v, ggml_bf16_t *) { return ggml_fp32_to_bf16(v); }
++
++template<typename T>
++static void ggml_compute_forward_situ_half(
++        const ggml_compute_params * params,
++        ggml_tensor * dst) {
++
++    const ggml_tensor * src0 = dst->src[0];
++    const ggml_tensor * src1 = dst->src[1];
++    char * src0_d = (char *) src0->data;
++    char * src1_d = (char *) (src1 ? src1->data : src0->data);
++    const size_t src0_o = src0->nb[1];
++    const size_t src1_o = src1 ? src1->nb[1] : src0->nb[1];
++
++    GGML_ASSERT(ggml_is_contiguous_1(src0));
++    GGML_ASSERT(ggml_is_contiguous_1(dst));
++
++    if (src1) {
++        GGML_ASSERT(ggml_is_contiguous_1(src1));
++        GGML_ASSERT(src0->type == src1->type);
++    }
++
++    const int ith = params->ith;
++    const int nth = params->nth;
++
++    const int nc = src1 ? src0->ne[0] : src0->ne[0] / 2;
++    const int nr = ggml_nrows(src0);
++
++    GGML_ASSERT(dst->ne[0] == nc);
++    GGML_ASSERT(ggml_nrows(dst) == nr);
++
++    const int32_t swapped = ggml_get_op_params_i32(dst, 1);
++    const float beta = ggml_get_op_params_f32(dst, 2);
++    const float lb   = ggml_get_op_params_f32(dst, 3);
++
++    const int dr = (nr + nth - 1)/nth;
++    const int ir0 = dr*ith;
++    const int ir1 = MIN(ir0 + dr, nr);
++
++    for (int i1 = ir0; i1 < ir1; i1++) {
++        T * src0_p = (T *) (src0_d + i1*src0_o);
++        T * src1_p = (T *) (src1_d + i1*src1_o);
++        T * dst_p  = (T *) ((char *) dst->data + i1*(dst->nb[1]));
++
++        if (!src1) {
++            src0_p += swapped ? nc : 0;
++            src1_p += swapped ? 0 : nc;
++        }
++
++        for (int k = 0; k < nc; k++) {
++            const float g = situ_to_float(src0_p[k]);
++            const float u = situ_to_float(src1_p[k]);
++            const float ga = beta * tanhf(g / beta) / (1.0f + expf(-g));
++            const float gu = lb * tanhf(u / lb);
++            dst_p[k] = situ_from_float(ga * gu, (T *) nullptr);
++        }
++    }
++}
++
++static void ggml_compute_forward_situ(
++        const ggml_compute_params * params,
++        ggml_tensor * dst) {
++
++    const ggml_tensor * src0 = dst->src[0];
++
++    switch (src0->type) {
++        case GGML_TYPE_F32:
++            {
++                ggml_compute_forward_situ_f32(params, dst);
++            } break;
++        case GGML_TYPE_F16:
++            {
++                ggml_compute_forward_situ_half<ggml_fp16_t>(params, dst);
++            } break;
++        case GGML_TYPE_BF16:
++            {
++                ggml_compute_forward_situ_half<ggml_bf16_t>(params, dst);
++            } break;
++        default:
++            {
++                GGML_ABORT("fatal error");
++            }
++    }
++}
++
+ // ggml_compute_forward_swiglu_clamp
+ 
+ static void ggml_compute_forward_swiglu_clamp_f32(const ggml_compute_params * params, ggml_tensor * dst) {
+@@ -10512,6 +10658,10 @@ void ggml_compute_forward_glu(
+             {
+                 ggml_compute_forward_swiglu_clamp(params, dst);
+             } break;
++        case GGML_GLU_OP_SITU:
++            {
++                ggml_compute_forward_situ(params, dst);
++            } break;
+         default:
+             {
+                 GGML_ABORT("fatal error");
+diff --git a/ggml/src/ggml-vulkan/ggml-vulkan.cpp b/ggml/src/ggml-vulkan/ggml-vulkan.cpp
+index e464094d3..1819a900e 100644
+--- a/ggml/src/ggml-vulkan/ggml-vulkan.cpp
++++ b/ggml/src/ggml-vulkan/ggml-vulkan.cpp
+@@ -4032,6 +4032,7 @@ void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested) {
+     CREATE_GLU(swiglu_clamp, SWIGLU_CLAMP)
+     CREATE_GLU(geglu_erf, GEGLU_ERF)
+     CREATE_GLU(geglu_quick, GEGLU_QUICK)
++    CREATE_GLU(situ, SITU)
+ #undef CREATE_GLU
+ 
+     ggml_vk_create_pipeline(device, device->pipeline_silu_back_f32, "silu_back_f32", silu_back_f32_len, silu_back_f32_data, "main", 3, sizeof(vk_op_push_constants), {512, 1, 1}, {}, 1);
+@@ -13887,6 +13888,7 @@ bool ggml_vk_build_graph(ggml_backend_vk_context * ctx, ggml_cgraph * cgraph, in
+         case GGML_GLU_OP_GEGLU_ERF:
+         case GGML_GLU_OP_GEGLU_QUICK:
+         case GGML_GLU_OP_SWIGLU_CLAMP:
++        case GGML_GLU_OP_SITU:
+             ggml_vk_glu(ctx, compute_ctx, src0, src1, node);
+             break;
+         default:
+@@ -16866,6 +16868,7 @@ static bool ggml_backend_vk_device_supports_op(ggml_backend_dev_t dev, const ggm
+                 case GGML_GLU_OP_GEGLU_ERF:
+                 case GGML_GLU_OP_GEGLU_QUICK:
+                 case GGML_GLU_OP_SWIGLU_CLAMP:
++                case GGML_GLU_OP_SITU:
+                     return ggml_vk_is_float_elementwise(op) && (!op->src[1] || op->src[1]->type == op->type);
+                 default:
+                     return false;
+diff --git a/ggml/src/ggml-vulkan/vulkan-shaders/situ.comp b/ggml/src/ggml-vulkan/vulkan-shaders/situ.comp
+new file mode 100644
+index 000000000..97c11dc83
+--- /dev/null
++++ b/ggml/src/ggml-vulkan/vulkan-shaders/situ.comp
+@@ -0,0 +1,13 @@
++#version 450
++
++#include "glu_head.glsl"
++
++// SiTU (Inkling-2): beta*tanh(a/beta)*sigmoid(a) * lb*tanh(b/lb)
++// beta and lb reuse the swiglu_oai alpha/limit push-constant slots
++float op(float a, float b) {
++    float ga = p.alpha * tanh(a / p.alpha) / (1.0f + exp(-a));
++    float gu = p.limit * tanh(b / p.limit);
++    return ga * gu;
++}
++
++#include "glu_main.glsl"
+diff --git a/ggml/src/ggml-vulkan/vulkan-shaders/vulkan-shaders-gen.cpp b/ggml/src/ggml-vulkan/vulkan-shaders/vulkan-shaders-gen.cpp
+index 064407390..cc25b7915 100644
+--- a/ggml/src/ggml-vulkan/vulkan-shaders/vulkan-shaders-gen.cpp
++++ b/ggml/src/ggml-vulkan/vulkan-shaders/vulkan-shaders-gen.cpp
+@@ -1005,7 +1005,7 @@ void process_shaders() {
+                                      "elu", "xielu", "sgn", "softplus", "step", "round", "ceil", "floor", "trunc"}) {
+             string_to_spv(op + "_" + t, "unary.comp", merge_maps(dict, {{"OP", "op_" + op}}));
+         }
+-        for (const std::string op : {"geglu", "reglu", "swiglu", "swiglu_oai", "swiglu_clamp", "geglu_erf", "geglu_quick"}) {
++        for (const std::string op : {"geglu", "reglu", "swiglu", "swiglu_oai", "swiglu_clamp", "geglu_erf", "geglu_quick", "situ"}) {
+             string_to_spv(op + "_" + t, op + ".comp", dict);
+         }
+         string_to_spv("log_" + t, "log.comp", dict);
+diff --git a/ggml/src/ggml.c b/ggml/src/ggml.c
+index 908752433..fc41eeb08 100644
+--- a/ggml/src/ggml.c
++++ b/ggml/src/ggml.c
+@@ -1276,9 +1276,10 @@ static const char * GGML_GLU_OP_NAME[GGML_GLU_OP_COUNT] = {
+     "GEGLU_ERF",
+     "GEGLU_QUICK",
+     "SWIGLU_CLAMP",
++    "SITU",
+ };
+ 
+-static_assert(GGML_GLU_OP_COUNT == 7, "GGML_GLU_OP_COUNT != 7");
++static_assert(GGML_GLU_OP_COUNT == 8, "GGML_GLU_OP_COUNT != 8");
+ 
+ static_assert(sizeof(struct ggml_object)%GGML_MEM_ALIGN == 0, "ggml_object size must be a multiple of GGML_MEM_ALIGN");
+ static_assert(sizeof(struct ggml_tensor)%GGML_MEM_ALIGN == 0, "ggml_tensor size must be a multiple of GGML_MEM_ALIGN");
+@@ -3119,6 +3120,22 @@ struct ggml_tensor * ggml_swiglu_oai(
+     return result;
+ }
+ 
++// ggml_situ
++
++struct ggml_tensor * ggml_situ(
++        struct ggml_context * ctx,
++        struct ggml_tensor  * a,
++        struct ggml_tensor  * b,
++        float                 beta,
++        float                 lb) {
++    GGML_ASSERT(beta > 0.0f && lb > 0.0f);
++    struct ggml_tensor * result = ggml_glu_impl(ctx, a, b, GGML_GLU_OP_SITU, false);
++    ggml_set_op_params_f32(result, 2, beta);
++    ggml_set_op_params_f32(result, 3, lb);
++
++    return result;
++}
++
+ struct ggml_tensor * ggml_swiglu_clamp(
+         struct ggml_context * ctx,
+         struct ggml_tensor  * a,
+diff --git a/src/llama-graph.cpp b/src/llama-graph.cpp
+index c1be2280b..68218d538 100644
+--- a/src/llama-graph.cpp
++++ b/src/llama-graph.cpp
+@@ -2604,18 +2604,14 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
+                 {
+                     // situ(gate, up) = beta*tanh(gate/beta)*sigmoid(gate) * lb*tanh(up/lb)
+                     GGML_ASSERT(has_gate);
+-                    // gate/up are strided views of the merged gate_up output; Vulkan SCALE needs contiguous inputs
+-                    cur = ggml_cont(ctx0, cur);
+-                    up  = ggml_cont(ctx0, up);
+-                    const float beta = hparams.situ_beta;
+-                    const float lb   = hparams.situ_linear_beta;
+-
+-                    ggml_tensor * act = ggml_scale(ctx0, ggml_tanh(ctx0, ggml_scale(ctx0, cur, 1.0f/beta)), beta);
+-                    act = ggml_mul(ctx0, act, ggml_sigmoid(ctx0, cur));
+-                    if (lb > 0.0f) {
+-                        up = ggml_scale(ctx0, ggml_tanh(ctx0, ggml_scale(ctx0, up, 1.0f/lb)), lb);
++                    if (hparams.situ_linear_beta > 0.0f) {
++                        cur = ggml_situ(ctx0, cur, up, hparams.situ_beta, hparams.situ_linear_beta);
++                    } else {
++                        const float beta = hparams.situ_beta;
++                        ggml_tensor * act = ggml_scale(ctx0, ggml_tanh(ctx0, ggml_scale(ctx0, cur, 1.0f/beta)), beta);
++                        act = ggml_mul(ctx0, act, ggml_sigmoid(ctx0, cur));
++                        cur = ggml_mul(ctx0, act, up);
+                     }
+-                    cur = ggml_mul(ctx0, act, up);
+                     cb(cur, "ffn_moe_situ", il);
+                 } break;
+             case LLM_FFN_GELU:
+diff --git a/tests/test-backend-ops.cpp b/tests/test-backend-ops.cpp
+index 4778e3afd..12eb244b5 100644
+--- a/tests/test-backend-ops.cpp
++++ b/tests/test-backend-ops.cpp
+@@ -2366,6 +2366,69 @@ struct test_glu_split : public test_case {
+     }
+ };
+ 
++struct test_situ : public test_case {
++    const ggml_type type;
++    const std::array<int64_t, 4> ne_a;
++    int v; // view (1 : strided gate/up views of a wider parent, like merged gate_up)
++    float beta;
++    float lb;
++
++    std::string vars() override {
++        return VARS_TO_STR5(type, ne_a, v, beta, lb);
++    }
++
++    test_situ(ggml_type type = GGML_TYPE_F32,
++              std::array<int64_t, 4> ne_a = {128, 2, 2, 2},
++              int v = 0,
++              float beta = 4.0f,
++              float lb = 25.0f)
++        : type(type), ne_a(ne_a), v(v), beta(beta), lb(lb) {}
++
++    ggml_tensor * build_graph(ggml_context * ctx) override {
++        ggml_tensor * a;
++        ggml_tensor * b;
++        if (v & 1) {
++            auto ne = ne_a; ne[0] *= 3;
++            a = ggml_new_tensor(ctx, type, 4, ne.data());
++            ggml_set_param(a);
++            ggml_set_name(a, "a");
++
++            a = ggml_view_4d(ctx, a, ne_a[0], ne_a[1], ne_a[2], ne_a[3], a->nb[1], a->nb[2], a->nb[3], 0);
++            ggml_set_name(a, "view_of_a");
++
++            b = ggml_new_tensor(ctx, type, 4, ne.data());
++            ggml_set_param(b);
++            ggml_set_name(b, "b");
++
++            b = ggml_view_4d(ctx, b, ne_a[0], ne_a[1], ne_a[2], ne_a[3], b->nb[1], b->nb[2], b->nb[3], ne_a[0]*ggml_type_size(type));
++            ggml_set_name(b, "view_of_b");
++        } else {
++            a = ggml_new_tensor(ctx, type, 4, ne_a.data());
++            ggml_set_param(a);
++            ggml_set_name(a, "a");
++
++            b = ggml_new_tensor(ctx, type, 4, ne_a.data());
++            ggml_set_param(b);
++            ggml_set_name(b, "b");
++        }
++
++        ggml_tensor * out = ggml_situ(ctx, a, b, beta, lb);
++        ggml_set_name(out, "out");
++
++        return out;
++    }
++
++    void initialize_tensors(ggml_context * ctx) override {
++        for (ggml_tensor * t = ggml_get_first_tensor(ctx); t != NULL; t = ggml_get_next_tensor(ctx, t)) {
++            init_tensor_uniform(t, -150.f, 150.f);
++        }
++    }
++
++    double max_nmse_err() override {
++        return type == GGML_TYPE_F16 ? 5e-6 : 1e-7;
++    }
++};
++
+ struct test_swiglu_oai : public test_case {
+     const ggml_type type;
+     const std::array<int64_t, 4> ne_a;
+@@ -10959,7 +11022,7 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
+     for (ggml_type type : {GGML_TYPE_F16, GGML_TYPE_F32, GGML_TYPE_BF16}) {
+         for (int v : {0, 1}) {
+             for (int op = 0; op < GGML_GLU_OP_COUNT; op++) {
+-                if (op == GGML_GLU_OP_SWIGLU_OAI || op == GGML_GLU_OP_SWIGLU_CLAMP) {
++                if (op == GGML_GLU_OP_SWIGLU_OAI || op == GGML_GLU_OP_SWIGLU_CLAMP || op == GGML_GLU_OP_SITU) {
+                     continue;
+                 }
+ 
+@@ -10984,6 +11047,15 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
+         }
+     }
+ 
++    for (ggml_type type : {GGML_TYPE_F32, GGML_TYPE_F16, GGML_TYPE_BF16}) {
++        for (int v : {0, 1}) {
++            for (float lb : {25.0f, 2.0f}) {
++                test_cases.emplace_back(new test_situ(type, { 128, 2, 2, 2 }, v, 4.0f, lb));
++                test_cases.emplace_back(new test_situ(type, { 5, 7, 11, 13 }, v, 4.0f, lb));
++            }
++        }
++    }
++
+     for (ggml_type type : {GGML_TYPE_F16, GGML_TYPE_F32, GGML_TYPE_BF16}) {
+         for (int v : {0, 1}) {
+             for (float limit : {2.0f, 10.0f}) {
+-- 
+2.56.1
+

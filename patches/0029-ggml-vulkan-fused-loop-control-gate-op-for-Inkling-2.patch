@@ -1,0 +1,479 @@
+From 495db4a4bdfd19c8d054aac252d7ba2389cbacfc Mon Sep 17 00:00:00 2001
+From: Naster17 <naster17.dev@gmail.com>
+Date: Sun, 22 Nov 2026 02:44:39 +0100
+Subject: [PATCH] ggml, vulkan : fused loop-control gate op for Inkling-2
+
+Assisted-by: omp
+---
+ docs/upstream-sync-2026-11-21.md              | 41 ++++++++++++++++
+ ggml/include/ggml-rpc.h                       |  4 +-
+ ggml/include/ggml.h                           |  9 ++++
+ ggml/src/ggml-cpu/ggml-cpu.c                  |  5 ++
+ ggml/src/ggml-cpu/ops.cpp                     | 35 ++++++++++++++
+ ggml/src/ggml-cpu/ops.h                       |  1 +
+ .../ggml-vulkan/ggml-vulkan-push-constants.h  |  8 ++++
+ ggml/src/ggml-vulkan/ggml-vulkan-types.h      |  1 +
+ ggml/src/ggml-vulkan/ggml-vulkan.cpp          | 47 +++++++++++++++++++
+ .../ggml-vulkan/vulkan-shaders/loop_gate.comp | 39 +++++++++++++++
+ .../vulkan-shaders/vulkan-shaders-gen.cpp     |  1 +
+ ggml/src/ggml.c                               | 31 +++++++++++-
+ src/models/inkling2.cpp                       |  2 +-
+ tests/test-backend-ops.cpp                    | 18 +++++++
+ 14 files changed, 237 insertions(+), 5 deletions(-)
+ create mode 100644 ggml/src/ggml-vulkan/vulkan-shaders/loop_gate.comp
+
+diff --git a/docs/upstream-sync-2026-11-21.md b/docs/upstream-sync-2026-11-21.md
+index dd279a941..27a2ceedd 100644
+--- a/docs/upstream-sync-2026-11-21.md
++++ b/docs/upstream-sync-2026-11-21.md
+@@ -170,3 +170,44 @@ Inkling sweep (final builds): IQ3_S single-board ub512 c16384: pp 50.7,
+ tg 34.5 (fastest config; 13 GB quant fits one board). Q6_K 22 GB RPC
+ -ts 25,75 ub256: pp 13.6, tg 9.6 (ub128: pp 13.1, tg 9.8 - ub256 fits but
+ the wire, not compute, bounds RPC tg). Both coherent incl. tool calls.
++
++---
++
++# Perf optimization pass (2026-11-22, Inkling-2)
++
++Goal: squeeze pp/tg on single-board and RPC, SenseNova-mHC style (study the
++hot graph, fuse what is slow, measure). Baselines before this pass:
++IQ3_S single ub512 pp 50.7 / tg 34.5; Q6_K RPC ts25,75 ub256 pp 13.6 / tg 9.6.
++
++## Changes
++
++- `e0e5b4228` ggml: populate use_counts on split graphs. The manual split
++  assembly left them zero, which silently disabled every use-count-gated
++  backend fusion (ggml_can_fuse_subgraph) on multi-backend local graphs and
++  on the RPC peer (the serializer sends the counts). Measured alone: ~flat
++  on inkling (its patterns mostly do not match the existing fusions), but
++  required for the fusions below and correct in general.
++- `5d89be2c0` ggml, vulkan: fused SiTU GLU op (GGML_GLU_OP_SITU). The SiTU
++  activation was ~10 elementwise ops per MoE layer over strided gate/up
++  views; now one shader reading both views directly (no cont copies).
++  CPU reference f32/f16/bf16, 24 backend-ops cases pass on gfx1013 and
++  Phoenix. No RPC protocol change (GLU variant, op_params carry beta/lb).
++  Measured: Q6_K RPC pp 12.7 -> 14.6 (+15%), tg 9.77 -> 10.0; IQ3_S RPC
++  ts12.5 pp 15.4 -> 16.2, tg 10.2 -> 10.6; single-board ~flat (pp 51.2,
++  tg 29.9 - dispatch overhead is spread over many other small ops).
++- LOOP_GATE op (pending commit): fuses the loop-control gating
++  add(sub(cur, mul(forget,cur)), mul(gain,message)) into one 4-src shader
++  (48 instances/token). GGML_OP_COUNT 102 -> 103, RPC proto patch 3 -> 4,
++  both boards rebuilt together.
++
++## Remaining levers (not done, documented)
++
++- mix() hyper-connection mixing: ~800 ops/token (3 mixes x 48 slots, each
++  concat+mul_mat+soft_max+mul_mat over the block bank). A fused
++  block-attention kernel is the biggest remaining tg lever (single-board
++  tg ~30 is dispatch-bound, not bandwidth-bound: ~57 GB/s effective vs
++  ~190 GB/s achieved by gemma4).
++- topk_moe routing fusion: existing fused_topk_moe expects a
++  softmax/top_k pattern; inkling uses sigmoid+bias+argsort_top_k+sum_rows
++  normalization - pattern extension needed.
++- shortconv dynamic taps: 4 lags x (view/cont/mul/add) on full-attn layers.
+diff --git a/ggml/include/ggml-rpc.h b/ggml/include/ggml-rpc.h
+index 5f1444563..161f4c616 100644
+--- a/ggml/include/ggml-rpc.h
++++ b/ggml/include/ggml-rpc.h
+@@ -8,10 +8,10 @@ extern "C" {
+ 
+ #define RPC_PROTO_MAJOR_VERSION    10
+ #define RPC_PROTO_MINOR_VERSION    0
+-#define RPC_PROTO_PATCH_VERSION    3
++#define RPC_PROTO_PATCH_VERSION    4
+ 
+ #ifdef  __cplusplus
+-static_assert(GGML_OP_COUNT == 102, "GGML_OP_COUNT has changed - update RPC_PROTO_PATCH_VERSION");
++static_assert(GGML_OP_COUNT == 103, "GGML_OP_COUNT has changed - update RPC_PROTO_PATCH_VERSION");
+ #endif
+ 
+ #define GGML_RPC_MAX_SERVERS       16
+diff --git a/ggml/include/ggml.h b/ggml/include/ggml.h
+index 956633d08..b1e691b20 100644
+--- a/ggml/include/ggml.h
++++ b/ggml/include/ggml.h
+@@ -433,6 +433,7 @@ extern "C" {
+ 
+         GGML_OP_MHC_ROUTE,
+         GGML_OP_MHC_MERGE,
++        GGML_OP_LOOP_GATE,
+         GGML_OP_SLEEP,
+ 
+         GGML_OP_COUNT,
+@@ -2323,6 +2324,14 @@ extern "C" {
+             struct ggml_tensor  * x,
+             struct ggml_tensor  * packed);
+ 
++    // Inkling-2 loop control gate: cur*(1 - forget) + gain*message (all f32, same shape)
++    GGML_API struct ggml_tensor * ggml_loop_gate(
++            struct ggml_context * ctx,
++            struct ggml_tensor  * cur,
++            struct ggml_tensor  * forget,
++            struct ggml_tensor  * gain,
++            struct ggml_tensor  * message);
++
+     GGML_API struct ggml_tensor * ggml_ssm_scan(
+             struct ggml_context * ctx,
+             struct ggml_tensor  * s,
+diff --git a/ggml/src/ggml-cpu/ggml-cpu.c b/ggml/src/ggml-cpu/ggml-cpu.c
+index 78169e7b4..20121bdcd 100644
+--- a/ggml/src/ggml-cpu/ggml-cpu.c
++++ b/ggml/src/ggml-cpu/ggml-cpu.c
+@@ -2135,6 +2135,10 @@ static void ggml_compute_forward(struct ggml_compute_params * params, struct ggm
+             {
+                 ggml_compute_forward_mhc_merge(params, tensor);
+             } break;
++        case GGML_OP_LOOP_GATE:
++            {
++                ggml_compute_forward_loop_gate(params, tensor);
++            } break;
+         case GGML_OP_LIGHTNING_INDEXER:
+             {
+                 ggml_compute_forward_lightning_indexer(params, tensor);
+@@ -2480,6 +2484,7 @@ static int ggml_get_n_tasks(struct ggml_tensor * node, int n_threads) {
+         case GGML_OP_LIGHTNING_INDEXER:
+         case GGML_OP_MHC_ROUTE:
+         case GGML_OP_MHC_MERGE:
++        case GGML_OP_LOOP_GATE:
+             {
+                 n_tasks = n_threads;
+             } break;
+diff --git a/ggml/src/ggml-cpu/ops.cpp b/ggml/src/ggml-cpu/ops.cpp
+index 343c8d4cd..7d1f031fc 100644
+--- a/ggml/src/ggml-cpu/ops.cpp
++++ b/ggml/src/ggml-cpu/ops.cpp
+@@ -12724,6 +12724,41 @@ void ggml_compute_forward_mhc_merge(const struct ggml_compute_params * params, s
+     }
+ }
+ 
++// ggml_compute_forward_loop_gate
++
++void ggml_compute_forward_loop_gate(const struct ggml_compute_params * params, struct ggml_tensor * dst) {
++    const struct ggml_tensor * cur     = dst->src[0];
++    const struct ggml_tensor * forget  = dst->src[1];
++    const struct ggml_tensor * gain    = dst->src[2];
++    const struct ggml_tensor * message = dst->src[3];
++
++    GGML_ASSERT(cur->type == GGML_TYPE_F32 && forget->type == GGML_TYPE_F32);
++    GGML_ASSERT(gain->type == GGML_TYPE_F32 && message->type == GGML_TYPE_F32);
++    GGML_ASSERT(ggml_is_contiguous(dst));
++    GGML_ASSERT(cur->nb[0] == sizeof(float) && forget->nb[0] == sizeof(float));
++    GGML_ASSERT(gain->nb[0] == sizeof(float) && message->nb[0] == sizeof(float));
++
++    const int64_t d     = cur->ne[0];
++    const int64_t n_tok = cur->ne[1];
++    const int64_t n_str = cur->ne[2];
++
++    float * out = (float *) dst->data;
++
++    for (int64_t s = 0; s < n_str; ++s) {
++        for (int64_t t = params->ith; t < n_tok; t += params->nth) {
++            const float * vc = (const float *) ((const char *) cur->data     + t*cur->nb[1]     + s*cur->nb[2]);
++            const float * vf = (const float *) ((const char *) forget->data  + t*forget->nb[1]  + s*forget->nb[2]);
++            const float * vg = (const float *) ((const char *) gain->data    + t*gain->nb[1]    + s*gain->nb[2]);
++            const float * vm = (const float *) ((const char *) message->data + t*message->nb[1] + s*message->nb[2]);
++            float       * vo = out + t*d + s*n_tok*d;
++
++            for (int64_t i = 0; i < d; ++i) {
++                vo[i] = vc[i]*(1.0f - vf[i]) + vg[i]*vm[i];
++            }
++        }
++    }
++}
++
+ // ggml_compute_forward_lightning_indexer
+ 
+ void ggml_compute_forward_lightning_indexer(
+diff --git a/ggml/src/ggml-cpu/ops.h b/ggml/src/ggml-cpu/ops.h
+index 3ea6a3fd0..5d303e94b 100644
+--- a/ggml/src/ggml-cpu/ops.h
++++ b/ggml/src/ggml-cpu/ops.h
+@@ -105,6 +105,7 @@ void ggml_compute_forward_gla(const struct ggml_compute_params * params, struct
+ void ggml_compute_forward_gated_delta_net(const struct ggml_compute_params * params, struct ggml_tensor * dst);
+ void ggml_compute_forward_mhc_route(const struct ggml_compute_params * params, struct ggml_tensor * dst);
+ void ggml_compute_forward_mhc_merge(const struct ggml_compute_params * params, struct ggml_tensor * dst);
++void ggml_compute_forward_loop_gate(const struct ggml_compute_params * params, struct ggml_tensor * dst);
+ void ggml_compute_forward_lightning_indexer(const struct ggml_compute_params * params, struct ggml_tensor * dst);
+ void ggml_compute_forward_dsv4_hc_comb(const struct ggml_compute_params * params, struct ggml_tensor * dst);
+ void ggml_compute_forward_dsv4_hc_pre(const struct ggml_compute_params * params, struct ggml_tensor * dst);
+diff --git a/ggml/src/ggml-vulkan/ggml-vulkan-push-constants.h b/ggml/src/ggml-vulkan/ggml-vulkan-push-constants.h
+index 72d5d24ef..db0dcb244 100644
+--- a/ggml/src/ggml-vulkan/ggml-vulkan-push-constants.h
++++ b/ggml/src/ggml-vulkan/ggml-vulkan-push-constants.h
+@@ -826,6 +826,14 @@ struct vk_op_mhc_merge_push_constants {
+     uint32_t n_d; uint32_t n_tok; uint32_t n_str;
+ };
+ 
++struct vk_op_loop_gate_push_constants {
++    uint32_t nb_c1; uint32_t nb_c2;
++    uint32_t nb_f1; uint32_t nb_f2;
++    uint32_t nb_g1; uint32_t nb_g2;
++    uint32_t nb_m1; uint32_t nb_m2;
++    uint32_t n_d; uint32_t n_tok; uint32_t n_str;
++};
++
+ struct vk_op_conv2d_push_constants {
+     uint32_t Cout;
+     uint32_t Cin;
+diff --git a/ggml/src/ggml-vulkan/ggml-vulkan-types.h b/ggml/src/ggml-vulkan/ggml-vulkan-types.h
+index 9cad40c86..60e284bcb 100644
+--- a/ggml/src/ggml-vulkan/ggml-vulkan-types.h
++++ b/ggml/src/ggml-vulkan/ggml-vulkan-types.h
+@@ -1028,6 +1028,7 @@ struct vk_device_struct {
+     vk_pipeline pipeline_ssm_conv_bias_silu_f32;
+     vk_pipeline pipeline_mhc_route_f32;
+     vk_pipeline pipeline_mhc_merge_f32;
++    vk_pipeline pipeline_loop_gate_f32;
+     vk_pipeline pipeline_opt_step_adamw_f32;
+     vk_pipeline pipeline_opt_step_sgd_f32;
+     std::map<vk_conv2d_pipeline_state, vk_pipeline> pipeline_conv2d_f32[CONV_SHAPE_COUNT];
+diff --git a/ggml/src/ggml-vulkan/ggml-vulkan.cpp b/ggml/src/ggml-vulkan/ggml-vulkan.cpp
+index 1819a900e..2fdaf83fb 100644
+--- a/ggml/src/ggml-vulkan/ggml-vulkan.cpp
++++ b/ggml/src/ggml-vulkan/ggml-vulkan.cpp
+@@ -4372,6 +4372,7 @@ void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested) {
+     ggml_vk_create_pipeline(device, device->pipeline_ssm_conv_bias_silu_f32, "ssm_conv_bias_silu_f32", ssm_conv_f32_len, ssm_conv_f32_data, "main", 4, sizeof(vk_op_ssm_conv_push_constants), {32, 16, 1}, {32, 16, 1, 1}, 1);
+     ggml_vk_create_pipeline(device, device->pipeline_mhc_route_f32, "mhc_route_f32", mhc_route_f32_len, mhc_route_f32_data, "main", 5, sizeof(vk_op_mhc_route_push_constants), {256, 1, 1}, {}, 1);
+     ggml_vk_create_pipeline(device, device->pipeline_mhc_merge_f32, "mhc_merge_f32", mhc_merge_f32_len, mhc_merge_f32_data, "main", 5, sizeof(vk_op_mhc_merge_push_constants), {256, 1, 1}, {}, 1);
++    ggml_vk_create_pipeline(device, device->pipeline_loop_gate_f32, "loop_gate_f32", loop_gate_f32_len, loop_gate_f32_data, "main", 5, sizeof(vk_op_loop_gate_push_constants), {256, 1, 1}, {}, 1);
+ 
+     ggml_vk_create_pipeline(device, device->pipeline_opt_step_adamw_f32, "opt_step_adamw_f32", opt_step_adamw_f32_len, opt_step_adamw_f32_data, "main", 5, sizeof(vk_op_push_constants), {512, 1, 1}, {}, 1);
+ 
+@@ -11666,6 +11667,32 @@ void ggml_vk_mhc_merge(ggml_backend_vk_context * ctx, vk_context& subctx, const
+     ggml_vk_dispatch_pipeline(ctx, subctx, pipeline, { a_buf, b_buf, x_buf, p_buf, d_buf }, pc, { (uint32_t) a->ne[0], (uint32_t) a->ne[1], (uint32_t) a->ne[2] });
+ }
+ 
++void ggml_vk_loop_gate(ggml_backend_vk_context * ctx, vk_context& subctx, const ggml_tensor * cur, const ggml_tensor * forget, const ggml_tensor * gain, const ggml_tensor * message, ggml_tensor * dst) {
++    VK_LOG_DEBUG("ggml_vk_loop_gate(" << cur << ", " << forget << ", " << gain << ", " << message << ", " << dst << ")");
++
++    vk_pipeline pipeline = ctx->device->pipeline_loop_gate_f32;
++    GGML_ASSERT(pipeline != nullptr);
++
++    ggml_pipeline_request_descriptor_sets(ctx, pipeline, 1);
++
++    const vk_subbuffer c_buf = ggml_vk_tensor_subbuffer(ctx, cur,     true);
++    const vk_subbuffer f_buf = ggml_vk_tensor_subbuffer(ctx, forget,  true);
++    const vk_subbuffer g_buf = ggml_vk_tensor_subbuffer(ctx, gain,    true);
++    const vk_subbuffer m_buf = ggml_vk_tensor_subbuffer(ctx, message, true);
++    const vk_subbuffer d_buf = ggml_vk_tensor_subbuffer(ctx, dst,     true);
++
++    vk_op_loop_gate_push_constants pc = {
++        ggml_vk_nb_elem(cur, 1), ggml_vk_nb_elem(cur, 2),
++        ggml_vk_nb_elem(forget, 1), ggml_vk_nb_elem(forget, 2),
++        ggml_vk_nb_elem(gain, 1), ggml_vk_nb_elem(gain, 2),
++        ggml_vk_nb_elem(message, 1), ggml_vk_nb_elem(message, 2),
++        (uint32_t) cur->ne[0], (uint32_t) cur->ne[1], (uint32_t) cur->ne[2],
++    };
++    init_pushconst_tensor_offsets(ctx, pc, cur, forget, gain, message, dst);
++
++    ggml_vk_dispatch_pipeline(ctx, subctx, pipeline, { c_buf, f_buf, g_buf, m_buf, d_buf }, pc, { (uint32_t) cur->ne[0], (uint32_t) cur->ne[1], (uint32_t) cur->ne[2] });
++}
++
+ void ggml_vk_ssm_conv(ggml_backend_vk_context * ctx, vk_context& subctx, const struct ggml_cgraph * cgraph, int node_idx) {
+     ggml_tensor * conv = cgraph->nodes[node_idx];
+     const ggml_tensor * src0 = conv->src[0];
+@@ -14074,6 +14101,11 @@ bool ggml_vk_build_graph(ggml_backend_vk_context * ctx, ggml_cgraph * cgraph, in
+ 
+         break;
+ 
++    case GGML_OP_LOOP_GATE:
++        ggml_vk_loop_gate(ctx, compute_ctx, node->src[0], node->src[1], node->src[2], node->src[3], node);
++
++        break;
++
+     case GGML_OP_SSM_SCAN:
+         ggml_vk_ssm_scan(ctx, compute_ctx, node);
+ 
+@@ -17414,6 +17446,21 @@ static bool ggml_backend_vk_device_supports_op(ggml_backend_dev_t dev, const ggm
+                 }
+                 return true;
+             }
++        case GGML_OP_LOOP_GATE:
++            {
++                if (op->type != GGML_TYPE_F32) {
++                    return false;
++                }
++                for (uint32_t i = 0; i < 4; ++i) {
++                    if (op->src[i] == nullptr || op->src[i]->type != GGML_TYPE_F32) {
++                        return false;
++                    }
++                    if (op->src[i]->nb[0] != sizeof(float)) {
++                        return false;
++                    }
++                }
++                return true;
++            }
+         case GGML_OP_SSM_SCAN:
+             {
+                 for (int i = 0; i < 6; i++) {
+diff --git a/ggml/src/ggml-vulkan/vulkan-shaders/loop_gate.comp b/ggml/src/ggml-vulkan/vulkan-shaders/loop_gate.comp
+new file mode 100644
+index 000000000..d496b132b
+--- /dev/null
++++ b/ggml/src/ggml-vulkan/vulkan-shaders/loop_gate.comp
+@@ -0,0 +1,39 @@
++#version 450
++
++// Inkling-2 loop control gate: out = cur*(1 - forget) + gain*message
++// Pure elementwise work, one thread per output element.
++
++layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
++
++layout(push_constant) uniform parameter {
++    uint nb_c1; uint nb_c2;
++    uint nb_f1; uint nb_f2;
++    uint nb_g1; uint nb_g2;
++    uint nb_m1; uint nb_m2;
++    uint n_d; uint n_tok; uint n_str;
++} pc;
++
++layout(binding = 0, std430) readonly buffer C { float data_c[]; };
++layout(binding = 1, std430) readonly buffer F { float data_f[]; };
++layout(binding = 2, std430) readonly buffer G { float data_g[]; };
++layout(binding = 3, std430) readonly buffer M { float data_m[]; };
++layout(binding = 4, std430) buffer D { float data_d[]; };
++
++void main() {
++    const uint i = gl_GlobalInvocationID.x;
++    const uint t = gl_GlobalInvocationID.y;
++    const uint s = gl_GlobalInvocationID.z;
++    const uint d = pc.n_d;
++
++    if (i >= d) {
++        return;
++    }
++
++    const uint off_c = t*pc.nb_c1 + s*pc.nb_c2;
++    const uint off_f = t*pc.nb_f1 + s*pc.nb_f2;
++    const uint off_g = t*pc.nb_g1 + s*pc.nb_g2;
++    const uint off_m = t*pc.nb_m1 + s*pc.nb_m2;
++    const uint off_d = t*d + s*pc.n_tok*d;
++
++    data_d[off_d + i] = data_c[off_c + i]*(1.0f - data_f[off_f + i]) + data_g[off_g + i]*data_m[off_m + i];
++}
+diff --git a/ggml/src/ggml-vulkan/vulkan-shaders/vulkan-shaders-gen.cpp b/ggml/src/ggml-vulkan/vulkan-shaders/vulkan-shaders-gen.cpp
+index cc25b7915..d762f7edd 100644
+--- a/ggml/src/ggml-vulkan/vulkan-shaders/vulkan-shaders-gen.cpp
++++ b/ggml/src/ggml-vulkan/vulkan-shaders/vulkan-shaders-gen.cpp
+@@ -1223,6 +1223,7 @@ void process_shaders() {
+ 
+     string_to_spv("mhc_route_f32", "mhc_route.comp", {});
+     string_to_spv("mhc_merge_f32", "mhc_merge.comp", {});
++    string_to_spv("loop_gate_f32", "loop_gate.comp", {});
+ 
+     string_to_spv("topk_moe_f32", "topk_moe.comp", {});
+ 
+diff --git a/ggml/src/ggml.c b/ggml/src/ggml.c
+index fc41eeb08..4b65f08cd 100644
+--- a/ggml/src/ggml.c
++++ b/ggml/src/ggml.c
+@@ -1117,10 +1117,11 @@ static const char * GGML_OP_NAME[GGML_OP_COUNT] = {
+ 
+     "MHC_ROUTE",
+     "MHC_MERGE",
++    "LOOP_GATE",
+     "SLEEP",
+ };
+ 
+-static_assert(GGML_OP_COUNT == 102, "GGML_OP_COUNT != 102");
++static_assert(GGML_OP_COUNT == 103, "GGML_OP_COUNT != 103");
+ 
+ static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
+     "none",
+@@ -1234,10 +1235,11 @@ static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
+ 
+     "mhc_route(a, b, w, bias)",
+     "mhc_merge(a, b, x, packed)",
++    "loop_gate(cur, forget, gain, message)",
+     "sleep(x)",
+ };
+ 
+-static_assert(GGML_OP_COUNT == 102, "GGML_OP_COUNT != 102");
++static_assert(GGML_OP_COUNT == 103, "GGML_OP_COUNT != 103");
+ 
+ static_assert(GGML_OP_POOL_COUNT == 2, "GGML_OP_POOL_COUNT != 2");
+ 
+@@ -5708,6 +5710,31 @@ struct ggml_tensor * ggml_mhc_merge(
+     return result;
+ }
+ 
++// ggml_loop_gate
++
++struct ggml_tensor * ggml_loop_gate(
++        struct ggml_context * ctx,
++        struct ggml_tensor  * cur,
++        struct ggml_tensor  * forget,
++        struct ggml_tensor  * gain,
++        struct ggml_tensor  * message) {
++    GGML_ASSERT(cur->type == GGML_TYPE_F32 && forget->type == GGML_TYPE_F32);
++    GGML_ASSERT(gain->type == GGML_TYPE_F32 && message->type == GGML_TYPE_F32);
++    GGML_ASSERT(cur->nb[0] == sizeof(float) && forget->nb[0] == sizeof(float));
++    GGML_ASSERT(gain->nb[0] == sizeof(float) && message->nb[0] == sizeof(float));
++    GGML_ASSERT(ggml_are_same_shape(cur, forget) && ggml_are_same_shape(cur, gain) && ggml_are_same_shape(cur, message));
++
++    struct ggml_tensor * result = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, cur->ne[0], cur->ne[1], cur->ne[2]);
++
++    result->op     = GGML_OP_LOOP_GATE;
++    result->src[0] = cur;
++    result->src[1] = forget;
++    result->src[2] = gain;
++    result->src[3] = message;
++
++    return result;
++}
++
+ // ggml_ssm_scan
+ 
+ struct ggml_tensor * ggml_ssm_scan(
+diff --git a/src/models/inkling2.cpp b/src/models/inkling2.cpp
+index 45477a69e..0ab3a33c3 100644
+--- a/src/models/inkling2.cpp
++++ b/src/models/inkling2.cpp
+@@ -245,7 +245,7 @@ ggml_tensor * llama_model_inkling2::graph::control(ggml_tensor * cur, ggml_tenso
+     ggml_tensor * gain   = ggml_tanh(ctx0, build_lora_mm(loop.ctrl_gain[ctrl],   gate));
+     ggml_tensor * forget = ggml_tanh(ctx0, build_lora_mm(loop.ctrl_forget[ctrl], gate));
+ 
+-    return ggml_add(ctx0, ggml_sub(ctx0, cur, ggml_mul(ctx0, forget, cur)), ggml_mul(ctx0, gain, message));
++    return ggml_loop_gate(ctx0, cur, forget, gain, message);
+ }
+ 
+ ggml_tensor * llama_model_inkling2::graph::build_inputs() {
+diff --git a/tests/test-backend-ops.cpp b/tests/test-backend-ops.cpp
+index 12eb244b5..ff210bd17 100644
+--- a/tests/test-backend-ops.cpp
++++ b/tests/test-backend-ops.cpp
+@@ -5688,6 +5688,20 @@ struct test_mhc_merge : public test_case {
+     }
+ };
+ 
++struct test_loop_gate : public test_case {
++    const int64_t d, n_tok;
++    std::string vars() override { return VARS_TO_STR2(d, n_tok); }
++    test_loop_gate(int64_t d = 2304, int64_t n_tok = 1) : d(d), n_tok(n_tok) {}
++    ggml_tensor * build_graph(ggml_context * ctx) override {
++        ggml_tensor * m = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, 2*d, n_tok, 1);
++        ggml_tensor * cur = ggml_view_3d(ctx, m, d, n_tok, 1, m->nb[1], m->nb[2], 0);
++        ggml_tensor * forget = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, d, n_tok, 1);
++        ggml_tensor * gain = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, d, n_tok, 1);
++        ggml_tensor * message = ggml_view_3d(ctx, m, d, n_tok, 1, m->nb[1], m->nb[2], d*sizeof(float));
++        return ggml_loop_gate(ctx, cur, forget, gain, message);
++    }
++};
++
+ static int32_t test_get_op_params_i32(const ggml_tensor * tensor, uint32_t i) {
+     GGML_ASSERT(i < GGML_MAX_OP_PARAMS / sizeof(int32_t));
+     return tensor->op_params[i];
+@@ -12133,6 +12147,10 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
+     test_cases.emplace_back(new test_mhc_merge(4096, 512));
+     test_cases.emplace_back(new test_mhc_merge(1000, 1));
+     test_cases.emplace_back(new test_mhc_merge(1000, 7));
++    test_cases.emplace_back(new test_loop_gate(2304, 1));
++    test_cases.emplace_back(new test_loop_gate(2304, 7));
++    test_cases.emplace_back(new test_loop_gate(2304, 128));
++    test_cases.emplace_back(new test_loop_gate(1000, 7));
+     test_cases.emplace_back(new test_mhc_merge(1000, 512));
+ 
+     test_cases.emplace_back(new test_gla(GGML_TYPE_F32, 32, 64, 1, 1));
+-- 
+2.56.1
+

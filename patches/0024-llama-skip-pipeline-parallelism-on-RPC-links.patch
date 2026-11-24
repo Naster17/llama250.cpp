@@ -1,0 +1,35 @@
+From 1d7113e9b4bbfa806b0b554acec1231d5b12255f Mon Sep 17 00:00:00 2001
+From: Naster17 <naster17.dev@gmail.com>
+Date: Sun, 22 Nov 2026 01:02:52 +0100
+Subject: [PATCH] llama : skip pipeline parallelism on RPC links
+
+Assisted-by: omp
+---
+ src/llama-context.cpp | 10 ++++++++++
+ 1 file changed, 10 insertions(+)
+
+diff --git a/src/llama-context.cpp b/src/llama-context.cpp
+index 1428393bc..e91dced49 100644
+--- a/src/llama-context.cpp
++++ b/src/llama-context.cpp
+@@ -572,7 +572,17 @@ llama_context::llama_context(
+ 
+         // TODO: move these checks to ggml_backend_sched
+         // enabling pipeline parallelism in the scheduler increases memory usage, so it is only done when necessary
++        // pipeline parallelism quadruples split-input copies; not worth it on slow RPC links
++        bool has_rpc = false;
++        for (const auto & backend : backends) {
++            const char * name = ggml_backend_name(backend.get());
++            if (name && strncmp(name, "RPC", 3) == 0) {
++                has_rpc = true;
++                break;
++            }
++        }
+         bool pipeline_parallel =
++            !has_rpc &&
+             model.n_devices() > 1 &&
+             model.n_gpu_layers() > model.hparams.n_layer_all &&
+             model.split_mode() == LLAMA_SPLIT_MODE_LAYER &&
+-- 
+2.56.1
+

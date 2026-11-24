@@ -1,0 +1,223 @@
+From cb296aeef2c6cc8b513dd06ba7f9eb19e33dfb7f Mon Sep 17 00:00:00 2001
+From: Naster17 <naster17.dev@gmail.com>
+Date: Wed, 25 Nov 2026 00:51:28 +0100
+Subject: [PATCH] vulkan : add TQ3_1S/TQ4_1S mul_mm shader support
+
+Assisted-by: opencode
+---
+ .../vulkan-shaders/dequant_funcs_cm2.glsl     | 86 +++++++++++++++++++
+ .../ggml-vulkan/vulkan-shaders/mul_mm.comp    |  2 +
+ .../vulkan-shaders/mul_mm_cm2.comp            |  7 +-
+ .../vulkan-shaders/mul_mm_funcs.glsl          | 47 ++++++++++
+ 4 files changed, 141 insertions(+), 1 deletion(-)
+
+diff --git a/ggml/src/ggml-vulkan/vulkan-shaders/dequant_funcs_cm2.glsl b/ggml/src/ggml-vulkan/vulkan-shaders/dequant_funcs_cm2.glsl
+index ee74af420..de671cc79 100644
+--- a/ggml/src/ggml-vulkan/vulkan-shaders/dequant_funcs_cm2.glsl
++++ b/ggml/src/ggml-vulkan/vulkan-shaders/dequant_funcs_cm2.glsl
+@@ -311,6 +311,86 @@ f16vec4 dequantFuncTQ2_0_v(const in decodeBufTQ2_0 bl, const in uint blockCoords
+ 
+     return bl.block.d * (f16vec4(q) - f16vec4(1.0));
+ }
++ 
++layout(buffer_reference, std430, buffer_reference_align = 2) buffer decodeBufTQ3_1S {
++   readonly block_tq3_1s block;
++};
++
++float16_t dequantFuncTQ3_1S(const in decodeBufTQ3_1S bl, const in uint blockCoords[2], const in uint coordInBlock[2])
++{
++    const float16_t centroids[8] = float16_t[8](
++        float16_t(-1.996684), float16_t(-1.291398), float16_t(-0.740341), float16_t(-0.247508),
++        float16_t( 0.230106), float16_t( 0.725222), float16_t( 1.277503), float16_t( 1.988943)
++    );
++    const uint j = coordInBlock[1];
++    const uint g = (j >> 3) * 3u;
++    const uint pck = uint(bl.block.qs[g])
++                   | (uint(bl.block.qs[g + 1u]) << 8)
++                   | (uint(bl.block.qs[g + 2u]) << 16);
++    const uint ci = (pck >> ((j & 7u) * 3u)) & 7u;
++    const float16_t d = (j < 16u) ? bl.block.d0 : bl.block.d1;
++    return d * centroids[ci];
++}
++
++f16vec4 dequantFuncTQ3_1S_v(const in decodeBufTQ3_1S bl, const in uint blockCoords[2], const in uint coordInBlock[2])
++{
++    const float16_t centroids[8] = float16_t[8](
++        float16_t(-1.996684), float16_t(-1.291398), float16_t(-0.740341), float16_t(-0.247508),
++        float16_t( 0.230106), float16_t( 0.725222), float16_t( 1.277503), float16_t( 1.988943)
++    );
++    const uint j0 = coordInBlock[1];
++    f16vec4 v;
++    [[unroll]] for (uint k = 0u; k < 4u; ++k) {
++        const uint j = j0 + k;
++        const uint g = (j >> 3) * 3u;
++        const uint pck = uint(bl.block.qs[g])
++                       | (uint(bl.block.qs[g + 1u]) << 8)
++                       | (uint(bl.block.qs[g + 2u]) << 16);
++        const uint ci = (pck >> ((j & 7u) * 3u)) & 7u;
++        const float16_t d = (j < 16u) ? bl.block.d0 : bl.block.d1;
++        v[k] = d * centroids[ci];
++    }
++    return v;
++}
++
++layout(buffer_reference, std430, buffer_reference_align = 2) buffer decodeBufTQ4_1S {
++   readonly block_tq4_1s block;
++};
++
++float16_t dequantFuncTQ4_1S(const in decodeBufTQ4_1S bl, const in uint blockCoords[2], const in uint coordInBlock[2])
++{
++    const float16_t centroids[16] = float16_t[16](
++        float16_t(-2.732590), float16_t(-2.069017), float16_t(-1.618046), float16_t(-1.256231),
++        float16_t(-0.942340), float16_t(-0.656759), float16_t(-0.388048), float16_t(-0.128395),
++        float16_t( 0.128395), float16_t( 0.388048), float16_t( 0.656759), float16_t( 0.942340),
++        float16_t( 1.256231), float16_t( 1.618046), float16_t( 2.069017), float16_t( 2.732590)
++    );
++    const uint j = coordInBlock[1];
++    const uint b = uint(bl.block.qs[j / 2]);
++    const uint ci = (j & 1u) == 0u ? (b & 0xFu) : (b >> 4u);
++    const float16_t d = (j < 16u) ? bl.block.d0 : bl.block.d1;
++    return d * centroids[ci];
++}
++
++f16vec4 dequantFuncTQ4_1S_v(const in decodeBufTQ4_1S bl, const in uint blockCoords[2], const in uint coordInBlock[2])
++{
++    const float16_t centroids[16] = float16_t[16](
++        float16_t(-2.732590), float16_t(-2.069017), float16_t(-1.618046), float16_t(-1.256231),
++        float16_t(-0.942340), float16_t(-0.656759), float16_t(-0.388048), float16_t(-0.128395),
++        float16_t( 0.128395), float16_t( 0.388048), float16_t( 0.656759), float16_t( 0.942340),
++        float16_t( 1.256231), float16_t( 1.618046), float16_t( 2.069017), float16_t( 2.732590)
++    );
++    const uint j0 = coordInBlock[1];
++    f16vec4 v;
++    [[unroll]] for (uint k = 0u; k < 4u; ++k) {
++        const uint j = j0 + k;
++        const uint b = uint(bl.block.qs[j / 2]);
++        const uint ci = (j & 1u) == 0u ? (b & 0xFu) : (b >> 4u);
++        const float16_t d = (j < 16u) ? bl.block.d0 : bl.block.d1;
++        v[k] = d * centroids[ci];
++    }
++    return v;
++}
+ 
+ layout(buffer_reference, std430, buffer_reference_align = 4) buffer decodeBufQ2_K {
+    readonly block_q2_K block;
+@@ -1712,6 +1792,12 @@ f16vec4 dequantFuncTURBO6_0_v(const in decodeBufTURBO6_0 bl, const in uint block
+ #elif defined(DATA_A_TQ2_0)
+ #define dequantFuncA dequantFuncTQ2_0
+ #define dequantFuncA_v dequantFuncTQ2_0_v
++#elif defined(DATA_A_TQ3_1S)
++#define dequantFuncA dequantFuncTQ3_1S
++#define dequantFuncA_v dequantFuncTQ3_1S_v
++#elif defined(DATA_A_TQ4_1S)
++#define dequantFuncA dequantFuncTQ4_1S
++#define dequantFuncA_v dequantFuncTQ4_1S_v
+ #elif defined(DATA_A_Q2_K)
+ #define dequantFuncA dequantFuncQ2_K
+ #define dequantFuncA_v dequantFuncQ2_K_v
+diff --git a/ggml/src/ggml-vulkan/vulkan-shaders/mul_mm.comp b/ggml/src/ggml-vulkan/vulkan-shaders/mul_mm.comp
+index 68de76373..b6351eb25 100644
+--- a/ggml/src/ggml-vulkan/vulkan-shaders/mul_mm.comp
++++ b/ggml/src/ggml-vulkan/vulkan-shaders/mul_mm.comp
+@@ -105,6 +105,8 @@ layout (binding = 0) readonly buffer BUF_Q5_K     { block_q5_K data[];     } a_q
+ layout (binding = 0) readonly buffer BUF_Q6_K     { block_q6_K data[];     } a_q6_k;
+ layout (binding = 0) readonly buffer BUF_TQ1_0    { block_tq1_0 data[];    } a_tq1_0;
+ layout (binding = 0) readonly buffer BUF_TQ2_0    { block_tq2_0 data[];    } a_tq2_0;
++layout (binding = 0) readonly buffer BUF_TQ3_1S   { block_tq3_1s data[];   } a_tq3_1s;
++layout (binding = 0) readonly buffer BUF_TQ4_1S   { block_tq4_1s data[];   } a_tq4_1s;
+ // Packed16 aliases
+ layout (binding = 0) readonly buffer BUF_Q4_0_P16   { block_q4_0_packed16 data[];   } a_q4_0_p16;
+ layout (binding = 0) readonly buffer BUF_Q5_0_P16   { block_q5_0_packed16 data[];   } a_q5_0_p16;
+diff --git a/ggml/src/ggml-vulkan/vulkan-shaders/mul_mm_cm2.comp b/ggml/src/ggml-vulkan/vulkan-shaders/mul_mm_cm2.comp
+index 1416cf72a..77b3719c5 100644
+--- a/ggml/src/ggml-vulkan/vulkan-shaders/mul_mm_cm2.comp
++++ b/ggml/src/ggml-vulkan/vulkan-shaders/mul_mm_cm2.comp
+@@ -57,7 +57,8 @@ uint mm_quant_k() {
+            (MmTypeA == GGML_TYPE_Q2_0) ?  64u :
+           ((MmTypeA == GGML_TYPE_Q4_0 || MmTypeA == GGML_TYPE_Q4_1 ||
+             MmTypeA == GGML_TYPE_Q5_0 || MmTypeA == GGML_TYPE_Q5_1 ||
+-            MmTypeA == GGML_TYPE_Q8_0) ? 32u : 256u);
++            MmTypeA == GGML_TYPE_Q8_0 || MmTypeA == GGML_TYPE_TQ3_1S ||
++            MmTypeA == GGML_TYPE_TQ4_1S) ? 32u : 256u);
+ }
+ #endif
+ 
+@@ -152,6 +153,8 @@ float16_t mmDecodeA(const in decodeBufA bl_in, const in uint blockCoords[2], con
+     case GGML_TYPE_Q6_K:  return dequantFuncQ6_K (decodeBufQ6_K (bl_in), blockCoords, coordInBlock);
+     case GGML_TYPE_TQ1_0: return dequantFuncTQ1_0(decodeBufTQ1_0(bl_in), blockCoords, coordInBlock);
+     case GGML_TYPE_TQ2_0: return dequantFuncTQ2_0(decodeBufTQ2_0(bl_in), blockCoords, coordInBlock);
++    case GGML_TYPE_TQ3_1S: return dequantFuncTQ3_1S(decodeBufTQ3_1S(bl_in), blockCoords, coordInBlock);
++    case GGML_TYPE_TQ4_1S: return dequantFuncTQ4_1S(decodeBufTQ4_1S(bl_in), blockCoords, coordInBlock);
+     default:              return float16_t(0);
+     }
+ }
+@@ -171,6 +174,8 @@ f16vec4 mmDecodeA_v(const in decodeBufA bl_in, const in uint blockCoords[2], con
+     case GGML_TYPE_Q6_K:  return dequantFuncQ6_K_v (decodeBufQ6_K (bl_in), blockCoords, coordInBlock);
+     case GGML_TYPE_TQ1_0: return dequantFuncTQ1_0_v(decodeBufTQ1_0(bl_in), blockCoords, coordInBlock);
+     case GGML_TYPE_TQ2_0: return dequantFuncTQ2_0_v(decodeBufTQ2_0(bl_in), blockCoords, coordInBlock);
++    case GGML_TYPE_TQ3_1S: return dequantFuncTQ3_1S_v(decodeBufTQ3_1S(bl_in), blockCoords, coordInBlock);
++    case GGML_TYPE_TQ4_1S: return dequantFuncTQ4_1S_v(decodeBufTQ4_1S(bl_in), blockCoords, coordInBlock);
+     default:              return f16vec4(0);
+     }
+ }
+diff --git a/ggml/src/ggml-vulkan/vulkan-shaders/mul_mm_funcs.glsl b/ggml/src/ggml-vulkan/vulkan-shaders/mul_mm_funcs.glsl
+index 588fb7354..cfe7eacdf 100644
+--- a/ggml/src/ggml-vulkan/vulkan-shaders/mul_mm_funcs.glsl
++++ b/ggml/src/ggml-vulkan/vulkan-shaders/mul_mm_funcs.glsl
+@@ -630,6 +630,53 @@ void load_a_to_shmem(const uint pos_a, const uint row, const uint col, const uin
+ 
+         const vec2 v = d * (vec2((qs >> shift) & 3) - 1.0);
+ 
++        const uint k_pair = row * mm_load_vec_a() / 2;
++        store_a(col, k_pair, FLOAT_TYPEV2(v.xy));
++    } else if (MmTypeA == GGML_TYPE_TQ3_1S) {
++        const float centroids[8] = float[8](
++            -1.996684, -1.291398, -0.740341, -0.247508,
++             0.230106,  0.725222,  1.277503,  1.988943
++        );
++        const uint idx = pos_a + col * p.stride_a / mm_load_vec_a() + row;
++        const uint ib  = idx / 16;
++        const uint iqs = (idx % 16) * 2;
++
++        const float d0 = float(a_tq3_1s.data[ib].d0);
++        const float d1 = float(a_tq3_1s.data[ib].d1);
++        vec2 v;
++        [[unroll]] for (uint kk = 0u; kk < 2u; ++kk) {
++            const uint j  = iqs + kk;
++            const uint g  = (j >> 3) * 3u;
++            const uint pck = uint(a_tq3_1s.data[ib].qs[g])
++                           | (uint(a_tq3_1s.data[ib].qs[g + 1u]) << 8)
++                           | (uint(a_tq3_1s.data[ib].qs[g + 2u]) << 16);
++            const uint ci = (pck >> ((j & 7u) * 3u)) & 7u;
++            v[kk] = ((j < 16u) ? d0 : d1) * centroids[ci];
++        }
++        const uint k_pair = row * mm_load_vec_a() / 2;
++        store_a(col, k_pair, FLOAT_TYPEV2(v.xy));
++    } else if (MmTypeA == GGML_TYPE_TQ4_1S) {
++        const float centroids[16] = float[16](
++            -2.732590, -2.069017, -1.618046, -1.256231,
++            -0.942340, -0.656759, -0.388048, -0.128395,
++             0.128395,  0.388048,  0.656759,  0.942340,
++             1.256231,  1.618046,  2.069017,  2.732590
++        );
++        const uint idx = pos_a + col * p.stride_a / mm_load_vec_a() + row;
++        const uint ib  = idx / 16;
++        const uint iqs = (idx % 16) * 2;
++
++        const float d0 = float(a_tq4_1s.data[ib].d0);
++        const float d1 = float(a_tq4_1s.data[ib].d1);
++        const uint b0 = uint(a_tq4_1s.data[ib].qs[iqs / 2]);
++        const uint j0 = iqs;
++        const uint j1 = iqs + 1;
++        const uint ci0 = (j0 & 1u) == 0u ? (b0 & 0xFu) : (b0 >> 4u);
++        const uint ci1 = (j1 & 1u) == 0u ? (b0 & 0xFu) : (b0 >> 4u);
++        const vec2 v = vec2(
++            ((j0 < 16u) ? d0 : d1) * centroids[ci0],
++            ((j1 < 16u) ? d0 : d1) * centroids[ci1]
++        );
+         const uint k_pair = row * mm_load_vec_a() / 2;
+         store_a(col, k_pair, FLOAT_TYPEV2(v.xy));
+     }
+-- 
+2.56.1
+

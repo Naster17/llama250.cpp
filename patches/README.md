@@ -5,11 +5,11 @@ All BC-250 (gfx1013 / PS5 Oberon APU) deltas on top of upstream llama.cpp
 (commit message + unified diff); apply with `git am` (or `git apply` for the
 diff alone).
 
-Patches 0001-0002 and 0006 predate the current session; 0003-0005 and 0007-0011
-were added this session. All are already committed in this fork — the files here
-are the exportable, reviewable form. 0007-0010 (fused mHC) build on the
-`sensenova_loop` architecture merged from the blueswhen/OpenSenseNova fork; 0011
-refines 0004 (gate the pre-split to RPC backends only).
+Patches 0001-0020 cover the BC-250/RPC/mHC/Inkling code deltas exported
+before the TurboQuant work; 0021-0036 export additional fork code commits
+(RPC/loop/Inkling/server fixes and TurboQuant/Vulkan shader support).
+All are already committed in this fork — the files here are the exportable,
+reviewable form. `git am` applies them in order.
 
 ## Patches
 
@@ -35,6 +35,22 @@ refines 0004 (gate the pre-split to RPC backends only).
 | 0018 | `0018-rpc-async-cross-backend-copies-async-path-wire-compr.patch` | `ggml-rpc.cpp` | `GGML_RPC_ASYNC_COPY=1`: cpy_tensor_async (host<->RPC queued; cross-server GET->SET chained via wait_before future), Q8_0/BF16 compression on set_tensor_async, BF16 cross-server copies. No proto change. test-rpc-multi-server OK; greedy identity OK; perf NEUTRAL on 1GbE (wire/RTT-bound, not copy-sync-bound). Default off. |
 | 0019 | `0019-vulkan-cached-host-buffers-NT-staging-copies-for-BC-.patch` | `ggml-vulkan.cpp`, `ggml-vulkan-buffers.cpp`, `ggml-vulkan-common.h` | `GGML_VK_HOST_MALLOC_CACHED=1`: cached malloc host buffers + AMD host-import gate lift; NT (movntdqa) staging->host copies at all out_memcpys sites. Fixes ~10 ms/token WC logits reads (RADV gfx1013 has no HOST_CACHED memory): gemma4 serving tg 47.8->88.3 (+85%), pp2048 +6%, greedy identical. Default off; launcher sets 1. |
 | 0020 | `0020-vulkan-guard-unsynced-sync-stale-non-vulkan-buffers.patch` | `ggml-vulkan.cpp` | Guard Vulkan graph overlap-sync against null/garbage/non-Vulkan tensor buffers and clear unsynced node lists at `graph_compute` entry. Fixes RPC tensor-split warmup segfault on peer (`ggml_vk_build_graph` overlap check). |
+| 0021 | `0021-llama-add-LLAMA_PRE_SPLIT_DISABLE-for-split-heavy-RPC-graphs.patch` | `src/llama-context.cpp` | Add `LLAMA_PRE_SPLIT_DISABLE` env to skip pre-split for split-heavy RPC graphs where pre-split is harmful. |
+| 0022 | `0022-llama-keep-loop-slot-KV-and-conv-state-on-physical-weight-device.patch` | `src/llama-context.cpp`, `src/llama-kv-cache.cpp` | Keep loop-slot KV and conv state on the physical weight device for loop/recurrent models. |
+| 0023 | `0023-rpc-forward-supports_op-queries-to-the-peer.patch` | `ggml-rpc.cpp` | Forward `supports_op` queries to the RPC peer so backend capability checks reflect the remote device. |
+| 0024 | `0024-llama-skip-pipeline-parallelism-on-RPC-links.patch` | `src/llama-context.cpp` | Skip pipeline parallelism on RPC links where it is unsafe/inefficient. |
+| 0025 | `0025-rpc-log-forwarded-supports_op-answers-at-GGML_RPC_DEBUG-2.patch` | `ggml-rpc.cpp` | Log forwarded `supports_op` answers at `GGML_RPC_DEBUG=2` for RPC capability debugging. |
+| 0026 | `0026-llama-make-SITU-gate-up-contiguous-for-Vulkan-SCALE.patch` | `src/models/` | Make SiTU gate/up contiguous for Vulkan SCALE path compatibility. |
+| 0027 | `0027-ggml-populate-use_counts-on-split-graphs-so-backend-fusions-fire.patch` | `ggml.c` | Populate `use_counts` on split graphs so backend fusions can fire (later reverted by 0030). |
+| 0028 | `0028-ggml-vulkan-fused-SiTU-GLU-op-for-Inkling-2-MoE-activation.patch` | `ggml`, `ggml-vulkan` | Fused SiTU GLU op for Inkling-2 MoE activation (op + Vulkan kernel). |
+| 0029 | `0029-ggml-vulkan-fused-loop-control-gate-op-for-Inkling-2.patch` | `ggml`, `ggml-vulkan` | Fused loop-control gate op for Inkling-2 (op + Vulkan kernel). |
+| 0030 | `0030-revert-ggml-populate-use_counts-on-split-graphs-so-backend-fusions-fire.patch` | `ggml.c` | Revert 0027: use_counts population on split graphs caused regressions; removed. |
+| 0031 | `0031-server-async-parallel-disk-prompt-cache-with-idle-persist.patch` | `tools/server/` | Async parallel disk prompt cache with idle persist in llama-server. |
+| 0032 | `0032-ggml-llama-add-TurboQuant-KV-cache-support.patch` | `ggml`, `llama`, `common`, `tests` | TurboQuant KV cache support: types/quants, CPU/Vulkan wiring, graph WHT, CLI/cache-type parsing, tests. |
+| 0033 | `0033-vulkan-include-ggml_type_ids-in-flash_attn_base.patch` | `vulkan-shaders/flash_attn_base.glsl` | Include `ggml_type_ids.glsl` in `flash_attn_base.glsl` to fix FA/MMQ shader compilation after upstream merge. |
+| 0034 | `0034-vulkan-add-turbo5-6-and-TQ-get_rows-shader-support.patch` | `ggml-vulkan`, `vulkan-shaders` | Add Turbo5/6 and TQ3_1S/TQ4_1S get_rows Vulkan shader support. |
+| 0035 | `0035-llama-add-TurboQuant-KV-cache-adaptive-helpers.patch` | `src/llama-kv-cache.*` | Add TurboQuant KV cache adaptive helpers (stream/type resolve, layer-adaptive K/V type selection). |
+| 0036 | `0036-vulkan-add-TQ3_1S-TQ4_1S-mul_mm-shader-support.patch` | `ggml-vulkan/vulkan-shaders` | Add TQ3_1S/TQ4_1S mul_mm/cm2 dequant and buffer wiring for Vulkan quantized matmul parity. |
 
 ## Apply (to a clean upstream checkout)
 
@@ -78,6 +94,8 @@ Use stock Mesa (int dot OFF). See `Naster17/bc250-mesa`
 - 0018: `tests/test-rpc-multi-server.sh` with GGML_RPC_ASYNC_COPY=1 + GGML_RPC_WIRE_BF16=1 OK; 2-board LFM3 greedy output identical base vs async; gemma4 cluster pp/tg neutral (logs in bench-results/bc250-20261119/).
 - 0019: gemma4 server tg 88.3 vs 47.8 baseline (temp 0, 256 tokens, greedy content identical); llama-bench pp512 936 / pp2048 904 / tg128 91.5; wc-copy-bench: memcpy 106 MB/s vs NT 4821 MB/s; launcher knob matrix (CACHE x MMID_TUNE) all load 31 s, tg 87.5-88.3.
 - 0020: LFM3-1.7B-Q8_0 `llama-server` tensor-split RPC warmup (`-ngl 999 -c 100000 -np 1 -ub 256 -b 2048 --split-mode tensor --rpc 192.168.1.105:50052`) no longer segfaults on .105 peer; server reaches `model loaded`/`server is listening`/`all slots are idle`.
+- 0021-0031: exported from existing fork commits (RPC/loop/Inkling/server perf fixes). See commit messages and corresponding docs/bench logs in git history for original verification context.
+- 0032-0036: TurboQuant KV-cache + Vulkan shader support. `.104` build OK; `test-backend-ops -o TURBO_WHT -b Vulkan0` PASS 27/27; `llama-cli -fa on -ctk turbo3 -ctv turbo3` smoke PASS; turbo4/5/6 smokes PASS on `.104`; `.105` turbo3 smoke PASS. 0036: `test-backend-ops support -o MUL_MAT -b Vulkan0 -p "type_a=tq3_1s|tq4_1s"` SUPPORTED; `perf` runs OK on Vulkan0; full `MUL_MAT` regression 2636/2636 OK. MMQ q8_1 kernels for TQ3_1S/TQ4_1S not added (BC-250 has `int dot: 0`).
 
 ## Release v1.1.0
 

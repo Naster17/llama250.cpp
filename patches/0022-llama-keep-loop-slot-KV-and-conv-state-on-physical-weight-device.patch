@@ -1,0 +1,56 @@
+From ca672f8cda904b14067b51e9ab47835934e9ebc4 Mon Sep 17 00:00:00 2001
+From: Naster17 <naster17.dev@gmail.com>
+Date: Sat, 21 Nov 2026 23:42:39 +0100
+Subject: [PATCH] llama : keep loop-slot KV and conv state on the physical
+ weight device
+
+Assisted-by: omp
+---
+ src/llama-model.cpp | 3 ++-
+ src/llama-model.h   | 2 ++
+ src/models/models.h | 2 +-
+ 3 files changed, 5 insertions(+), 2 deletions(-)
+
+diff --git a/src/llama-model.cpp b/src/llama-model.cpp
+index bee7494a7..7b5df8f2f 100644
+--- a/src/llama-model.cpp
++++ b/src/llama-model.cpp
+@@ -2901,7 +2901,8 @@ void llama_model::print_info() const {
+ }
+ 
+ ggml_backend_dev_t llama_model::dev_layer(int il) const {
+-    return pimpl->dev_layer.at(il).dev;
++    // loop slots keep KV/state on the physical weight device, else RPC layer-split corrupts them
++    return pimpl->dev_layer.at(layer_phys(il)).dev;
+ }
+ 
+ ggml_backend_dev_t llama_model::dev_output() const {
+diff --git a/src/llama-model.h b/src/llama-model.h
+index b4f4a82f1..9cc3a78bb 100644
+--- a/src/llama-model.h
++++ b/src/llama-model.h
+@@ -1043,6 +1043,8 @@ struct llama_model {
+     void print_info() const;
+ 
+     ggml_backend_dev_t dev_layer(int il) const;
++    // cache slot -> physical layer whose weights it reuses (loop models); identity otherwise
++    virtual int layer_phys(int il) const { return il; }
+     ggml_backend_dev_t dev_output() const;
+ 
+     ggml_backend_buffer_type_t select_buft(int il) const;
+diff --git a/src/models/models.h b/src/models/models.h
+index a7ef4f624..be211f1d0 100644
+--- a/src/models/models.h
++++ b/src/models/models.h
+@@ -2562,7 +2562,7 @@ struct llama_model_inkling2_loop : public llama_model_inkling2 {
+     void post_arch_tensors(llama_model_loader & ml) override;
+ 
+     int n_layer_phys() const override { return n_phys; }
+-    int layer_phys(int il) const;
++    int layer_phys(int il) const override;
+ 
+     int      n_phys     = 0;
+     uint32_t core_start = 0;
+-- 
+2.56.1
+

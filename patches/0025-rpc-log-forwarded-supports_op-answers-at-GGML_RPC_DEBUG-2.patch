@@ -1,0 +1,27 @@
+From a062dd502337a2720d301ff551083a359df4b41f Mon Sep 17 00:00:00 2001
+From: Naster17 <naster17.dev@gmail.com>
+Date: Sun, 22 Nov 2026 01:10:18 +0100
+Subject: [PATCH] rpc : log forwarded supports_op answers at GGML_RPC_DEBUG=2
+
+Assisted-by: omp
+---
+ ggml/src/ggml-rpc/ggml-rpc.cpp | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/ggml/src/ggml-rpc/ggml-rpc.cpp b/ggml/src/ggml-rpc/ggml-rpc.cpp
+index 8f6d6424b..a6960e573 100644
+--- a/ggml/src/ggml-rpc/ggml-rpc.cpp
++++ b/ggml/src/ggml-rpc/ggml-rpc.cpp
+@@ -3390,6 +3390,9 @@ static bool ggml_backend_rpc_device_supports_op(ggml_backend_dev_t dev, const st
+     rpc_msg_supports_op_rsp response;
+     dispatcher->send(RPC_CMD_SUPPORTS_OP, request, sizeof(*request), nullptr, 0, &response, sizeof(response));
+     const bool result = response.result != 0;
++    LOG_DBG2("[%s] op: %s, src0 type: %s, ne0: %lld, result: %d\n", __func__, ggml_op_name(op->op),
++             op->src[0] ? ggml_type_name(op->src[0]->type) : "none",
++             op->src[0] ? (long long)op->src[0]->ne[0] : 0, (int)result);
+     {
+         std::lock_guard<std::mutex> lock(cache_mutex);
+         cache[key] = result;
+-- 
+2.56.1
+
