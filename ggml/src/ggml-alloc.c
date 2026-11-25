@@ -460,6 +460,7 @@ struct hash_node {
     int buffer_id;
     struct buffer_address addr;
     bool allocated;
+    size_t alloc_size; // padded allocation size for reuse/free
 };
 
 struct tensor_alloc {
@@ -588,6 +589,13 @@ static bool ggml_gallocr_is_own(ggml_gallocr_t galloc, struct ggml_tensor * t) {
     return ggml_gallocr_hash_get(galloc, t)->allocated;
 }
 
+static size_t ggml_gallocr_pad_size(size_t size) {
+    // 25% headroom to reduce same-shape reallocations when tensor sizes grow (e.g. KQ mask during PP)
+    const size_t pad = size / 4;
+    const size_t max_pad = 64*1024*1024;
+    return size + (pad > max_pad ? max_pad : pad);
+}
+
 static bool ggml_gallocr_is_allocated(ggml_gallocr_t galloc, struct ggml_tensor * t) {
     return t->data != NULL // tensor data already set externally
         || t->buffer // tensor on external buffer (but not yet allocated)
@@ -599,20 +607,19 @@ static void ggml_gallocr_free_extra_space(ggml_gallocr_t galloc, struct ggml_ten
     struct hash_node * hn = ggml_gallocr_hash_get(galloc, node);
     struct hash_node * p_hn = ggml_gallocr_hash_get(galloc, parent);
 
-    size_t parent_size = ggml_backend_buft_get_alloc_size(galloc->bufts[p_hn->buffer_id], parent);
-    size_t node_size = ggml_backend_buft_get_alloc_size(galloc->bufts[hn->buffer_id], node);
+    size_t parent_alloc_size = p_hn->alloc_size ? p_hn->alloc_size : ggml_backend_buft_get_alloc_size(galloc->bufts[p_hn->buffer_id], parent);
+    size_t node_alloc_size   = hn->alloc_size   ? hn->alloc_size   : ggml_gallocr_pad_size(ggml_backend_buft_get_alloc_size(galloc->bufts[p_hn->buffer_id], node));
 
-    GGML_ASSERT(parent_size >= node_size);
+    GGML_ASSERT(parent_alloc_size >= node_alloc_size);
 
-    // note: we want after the freeing the chunks to continue to be aligned
     struct ggml_dyn_tallocr * p_alloc = galloc->buf_tallocs[p_hn->buffer_id];
-    parent_size = aligned_offset(NULL, parent_size, p_alloc->alignment);
-    node_size = aligned_offset(NULL, node_size, p_alloc->alignment);
+    parent_alloc_size = aligned_offset(NULL, parent_alloc_size, p_alloc->alignment);
+    node_alloc_size   = aligned_offset(NULL, node_alloc_size,   p_alloc->alignment);
 
-    if (parent_size > node_size) {
+    if (parent_alloc_size > node_alloc_size) {
         struct buffer_address p_addr = p_hn->addr;
-        p_addr.offset += node_size;
-        size_t extra_size = parent_size - node_size;
+        p_addr.offset += node_alloc_size;
+        size_t extra_size = parent_alloc_size - node_alloc_size;
         AT_PRINTF("freeing extra %zu bytes from parent %s for %s\n", extra_size, parent->name, node->name);
         ggml_dyn_tallocr_free_bytes(p_alloc, p_addr, extra_size);
     }
@@ -661,6 +668,7 @@ static void ggml_gallocr_allocate_node(ggml_gallocr_t galloc, struct ggml_tensor
                             assert(view_src_hn->addr.chunk == p_hn->addr.chunk && view_src_hn->addr.offset == p_hn->addr.offset);
                             hn->buffer_id = p_hn->buffer_id;
                             hn->addr = p_hn->addr;
+                            hn->alloc_size = ggml_gallocr_pad_size(ggml_backend_buft_get_alloc_size(galloc->bufts[p_hn->buffer_id], node));
                             p_hn->allocated = false; // avoid freeing the parent
                             view_src_hn->allocated = false;
                             ggml_gallocr_free_extra_space(galloc, node, view_src);
@@ -670,6 +678,7 @@ static void ggml_gallocr_allocate_node(ggml_gallocr_t galloc, struct ggml_tensor
                         AT_PRINTF("reusing parent %s for %s\n", parent->name, node->name);
                         hn->buffer_id = p_hn->buffer_id;
                         hn->addr = p_hn->addr;
+                        hn->alloc_size = ggml_gallocr_pad_size(ggml_backend_buft_get_alloc_size(galloc->bufts[p_hn->buffer_id], node));
                         p_hn->allocated = false; // avoid freeing the parent
                         ggml_gallocr_free_extra_space(galloc, node, parent);
                         return;
@@ -681,8 +690,10 @@ static void ggml_gallocr_allocate_node(ggml_gallocr_t galloc, struct ggml_tensor
         struct ggml_dyn_tallocr * alloc = galloc->buf_tallocs[buffer_id];
         ggml_backend_buffer_type_t buft = galloc->bufts[buffer_id];
         size_t size = ggml_backend_buft_get_alloc_size(buft, node);
+        size_t alloc_size = ggml_gallocr_pad_size(size);
         hn->buffer_id = buffer_id;
-        hn->addr = ggml_dyn_tallocr_alloc(alloc, size, node);
+        hn->addr = ggml_dyn_tallocr_alloc(alloc, alloc_size, node);
+        hn->alloc_size = alloc_size;
     }
 }
 
@@ -697,7 +708,7 @@ static void ggml_gallocr_free_node(ggml_gallocr_t galloc, struct ggml_tensor * n
     int buffer_id = hn->buffer_id;
     struct ggml_dyn_tallocr * alloc = galloc->buf_tallocs[buffer_id];
     ggml_backend_buffer_type_t buft = galloc->bufts[buffer_id];
-    size_t size = ggml_backend_buft_get_alloc_size(buft, node);
+    size_t size = hn->alloc_size ? hn->alloc_size : ggml_backend_buft_get_alloc_size(buft, node);
 
     AT_PRINTF("%s: freeing %s at {chunk=%d, offset=%zu} (%zu bytes) - n_free_blocks = %d\n",
         __func__, node->name, hn->addr.chunk, hn->addr.offset, size, alloc->chunks[hn->addr.chunk]->n_free_blocks);
@@ -707,6 +718,7 @@ static void ggml_gallocr_free_node(ggml_gallocr_t galloc, struct ggml_tensor * n
 
     ggml_dyn_tallocr_free_bytes(alloc, hn->addr, size);
     hn->allocated = false;
+    hn->alloc_size = 0;
 }
 
 static int get_node_buffer_id(const int * node_buffer_ids, int i) {
@@ -863,7 +875,7 @@ static bool ggml_gallocr_reserve_n_impl(
             struct hash_node * hn = ggml_gallocr_hash_get(galloc, node);
             node_alloc->dst.buffer_id = hn->buffer_id;
             node_alloc->dst.addr = hn->addr;
-            node_alloc->dst.size_max  = ggml_backend_buft_get_alloc_size(galloc->bufts[hn->buffer_id], node);
+            node_alloc->dst.size_max  = hn->alloc_size ? hn->alloc_size : ggml_gallocr_pad_size(ggml_backend_buft_get_alloc_size(galloc->bufts[hn->buffer_id], node));
         }
         for (int j = 0; j < GGML_MAX_SRC; j++) {
             struct ggml_tensor * src = node->src[j];
@@ -875,7 +887,7 @@ static bool ggml_gallocr_reserve_n_impl(
                 struct hash_node * hn = ggml_gallocr_hash_get(galloc, src);
                 node_alloc->src[j].buffer_id = hn->buffer_id;
                 node_alloc->src[j].addr = hn->addr;
-                node_alloc->src[j].size_max = ggml_backend_buft_get_alloc_size(galloc->bufts[hn->buffer_id], src);
+                node_alloc->src[j].size_max = hn->alloc_size ? hn->alloc_size : ggml_gallocr_pad_size(ggml_backend_buft_get_alloc_size(galloc->bufts[hn->buffer_id], src));
             }
         }
     }
@@ -895,7 +907,7 @@ static bool ggml_gallocr_reserve_n_impl(
         } else {
             galloc->leaf_allocs[i].leaf.buffer_id = hn->buffer_id;
             galloc->leaf_allocs[i].leaf.addr = hn->addr;
-            galloc->leaf_allocs[i].leaf.size_max = ggml_backend_buft_get_alloc_size(galloc->bufts[hn->buffer_id], leaf);
+            galloc->leaf_allocs[i].leaf.size_max = hn->alloc_size ? hn->alloc_size : ggml_gallocr_pad_size(ggml_backend_buft_get_alloc_size(galloc->bufts[hn->buffer_id], leaf));
         }
     }
 
