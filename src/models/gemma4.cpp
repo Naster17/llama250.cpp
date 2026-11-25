@@ -144,6 +144,10 @@ void llama_model_gemma4::load_arch_tensors(llama_model_loader &) {
             layer.per_layer_proj       = create_tensor(tn(LLM_TENSOR_PER_LAYER_PROJ,      "weight", i), {n_embd_per_layer, n_embd}, 0);
             layer.per_layer_post_norm  = create_tensor(tn(LLM_TENSOR_PER_LAYER_POST_NORM, "weight", i), {n_embd}, 0);
         }
+
+        // Gemma4 global-attention layers with no V projection: V=rms_norm(Kraw), K=rope(k_norm(Kraw))
+        // Store K=V compactly in KV cache (see vLLM issue #68778 / arXiv:2611.23035).
+        hparams.k_eq_v_impl[i] = hparams.has_kv(i) && !layer.wqkv && layer.wv == nullptr;
     }
 }
 

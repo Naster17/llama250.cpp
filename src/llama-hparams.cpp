@@ -337,6 +337,13 @@ bool llama_hparams::has_kv(uint32_t il) const {
     return kv_source(il) == il;
 }
 
+bool llama_hparams::is_k_eq_v(uint32_t il) const {
+    if (il < n_layer_all) {
+        return k_eq_v_impl[il];
+    }
+    GGML_ABORT("%s: il (%u) out of bounds (n_layer_all: %u)\n", __func__, il, n_layer_all);
+}
+
 uint32_t llama_hparams::kv_source(uint32_t il) const {
     if (il < n_layer_all) {
         return kv_source_impl[il];

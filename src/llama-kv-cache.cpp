@@ -331,27 +331,28 @@ llama_kv_cache::llama_kv_cache(
 
         const bool has_k = true;
         const bool has_v = !is_mla;
+        const bool k_eq_v = hparams.is_k_eq_v(il);
 
         const ggml_type layer_type_k = llama_kv_cache_turbo_layer_adaptive_type_k(kv_adaptive_mode, type_k, type_v, il, n_layer);
         const ggml_type layer_type_v = llama_kv_cache_turbo_layer_adaptive_type_v(kv_adaptive_mode, type_k, type_v, il, n_layer);
 
-        ggml_tensor * k = has_k ? ggml_new_tensor_3d(ctx, layer_type_k, n_embd_k_gqa, kv_size, n_stream) : nullptr;
+        ggml_tensor * k = (has_k && !k_eq_v) ? ggml_new_tensor_3d(ctx, layer_type_k, n_embd_k_gqa, kv_size, n_stream) : nullptr;
         ggml_tensor * v = has_v ? ggml_new_tensor_3d(ctx, layer_type_v, n_embd_v_gqa, kv_size, n_stream) : nullptr;
 
-        has_k && ggml_format_name(k, "cache_%sk_l%d", name_tag, il);
-        has_v && ggml_format_name(v, "cache_%sv_l%d", name_tag, il);
+        if (k) ggml_format_name(k, "cache_%sk_l%d", name_tag, il);
+        if (v) ggml_format_name(v, "cache_%sv_l%d", name_tag, il);
 
         std::vector<ggml_tensor *> k_stream;
         std::vector<ggml_tensor *> v_stream;
 
         for (uint32_t s = 0; s < n_stream; ++s) {
-            k_stream.push_back(has_k ? ggml_view_2d(ctx, k, n_embd_k_gqa, kv_size, k->nb[1], s*k->nb[2]) : nullptr);
-            v_stream.push_back(has_v ? ggml_view_2d(ctx, v, n_embd_v_gqa, kv_size, v->nb[1], s*v->nb[2]) : nullptr);
+            k_stream.push_back(k ? ggml_view_2d(ctx, k, n_embd_k_gqa, kv_size, k->nb[1], s*k->nb[2]) : nullptr);
+            v_stream.push_back(v ? ggml_view_2d(ctx, v, n_embd_v_gqa, kv_size, v->nb[1], s*v->nb[2]) : nullptr);
         }
 
         map_layer_ids[il] = layers.size();
 
-        layers.push_back({ il, k, v, model.layers[il].k_cache_s, model.layers[il].v_cache_s, k_stream, v_stream, });
+        layers.push_back({ il, k, v, model.layers[il].k_cache_s, model.layers[il].v_cache_s, k_stream, v_stream, nullptr, nullptr, k_eq_v });
     }
 
     if (reuse) {
@@ -1363,11 +1364,17 @@ bool llama_kv_cache::get_has_shift() const {
 }
 
 ggml_type llama_kv_cache::type_k() const {
-    return layers[0].k->type;
+    for (const auto & layer : layers) {
+        if (layer.k) return layer.k->type;
+    }
+    return GGML_TYPE_F32;
 }
 
 ggml_type llama_kv_cache::type_v() const {
-    return layers[0].v->type;
+    for (const auto & layer : layers) {
+        if (layer.v) return layer.v->type;
+    }
+    return GGML_TYPE_F32;
 }
 
 std::vector<uint32_t> llama_kv_cache::get_layer_ids() const {
@@ -1590,6 +1597,9 @@ ggml_tensor * llama_kv_cache::cpy_k(ggml_context * ctx, ggml_tensor * k_cur, ggm
     const int32_t ikv = map_layer_ids.at(il);
 
     ggml_tensor * k = layers[ikv].k;
+    if (!k) {
+        return nullptr;
+    }
 
     const int64_t n_embd_head = k_cur->ne[0];
     const int64_t n_head      = k_cur->ne[1];
@@ -1778,6 +1788,20 @@ void llama_kv_cache::set_input_k_shift(ggml_tensor * dst) const {
 
         for (uint32_t i = 0; i < cells.size(); ++i) {
             data[s*cells.size() + i] = cells.is_empty(i) ? 0 : cells.get_shift(i);
+        }
+    }
+}
+
+void llama_kv_cache::set_input_k_pos(ggml_tensor * dst, const slot_info & sinfo, uint32_t n_kv) const {
+    GGML_ASSERT(ggml_backend_buffer_is_host(dst->buffer));
+
+    int32_t * data = (int32_t *) dst->data;
+
+    for (uint32_t s = 0; s < sinfo.n_stream(); ++s) {
+        const auto & cells = v_cells[sinfo.strm[s]];
+
+        for (uint32_t i = 0; i < n_kv; ++i) {
+            data[s*n_kv + i] = cells.is_empty(i) ? 0 : cells.pos_get(i);
         }
     }
 }
@@ -2199,7 +2223,7 @@ size_t llama_kv_cache::size_k_bytes() const {
     size_t size_k_bytes = 0;
 
     for (const auto & layer : layers) {
-        size_k_bytes += ggml_nbytes(layer.k);
+        if (layer.k) size_k_bytes += ggml_nbytes(layer.k);
     }
 
     return size_k_bytes;
@@ -3201,6 +3225,13 @@ ggml_tensor * llama_kv_cache_context::build_input_v_idxs(ggml_context * ctx, con
     return kv->build_input_v_idxs(ctx, ubatch);
 }
 
+ggml_tensor * llama_kv_cache_context::build_input_k_pos(ggml_context * ctx) const {
+    ggml_tensor * k_pos = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, n_kv);
+    ggml_set_input(k_pos);
+    ggml_set_name(k_pos, "attn_inp_k_pos_k_eq_v");
+    return k_pos;
+}
+
 std::vector<ggml_tensor *> llama_kv_cache_context::get_k_rot() const {
     return kv->get_k_rot();
 }
@@ -3211,6 +3242,10 @@ std::vector<ggml_tensor *> llama_kv_cache_context::get_v_rot() const {
 
 void llama_kv_cache_context::set_input_k_shift(ggml_tensor * dst) const {
     kv->set_input_k_shift(dst);
+}
+
+void llama_kv_cache_context::set_input_k_pos(ggml_tensor * dst) const {
+    kv->set_input_k_pos(dst, sinfos[i_cur], n_kv);
 }
 
 void llama_kv_cache_context::set_input_k_idxs(ggml_tensor * dst, const llama_ubatch * ubatch) const {

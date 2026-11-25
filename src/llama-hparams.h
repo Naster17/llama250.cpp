@@ -88,6 +88,9 @@ struct llama_hparams {
     // layer il reads the KV cache of layer kv_source_impl[il] (own cache if equal to il)
     std::array<uint32_t, LLAMA_MAX_LAYERS> kv_source_impl;
 
+    // layer il stores K=V compact cache (Gemma4 global attention: V=rms_norm(Kraw), K=rope(w*V))
+    std::array<bool, LLAMA_MAX_LAYERS> k_eq_v_impl = {};
+
     // different head size for full_attention and SWA layers
     uint32_t n_embd_head_k_full; // dimension of keys (d_k). d_q is assumed to be the same, but there are n_head q heads, and only n_head_kv k-v heads
     uint32_t n_embd_head_v_full; // dimension of values (d_v) aka n_embd_head
@@ -559,6 +562,8 @@ struct llama_hparams {
     uint32_t n_embd_head_v_mla() const;
 
     bool has_kv(uint32_t il) const;
+
+    bool is_k_eq_v(uint32_t il) const;
 
     uint32_t kv_source(uint32_t il) const;
 

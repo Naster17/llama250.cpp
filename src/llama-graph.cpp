@@ -3907,8 +3907,10 @@ static ggml_tensor * build_attn_iswa_impl(
 
     const bool store_kv = !use_kv_cur || hparams.n_layer_kv_from_start >= 0;
 
+    const bool k_eq_v = hparams.is_k_eq_v(il);
+
     // optionally store to KV cache
-    if (store_kv && k_cur) {
+    if (store_kv && k_cur && !k_eq_v) {
         const auto & k_idxs = is_swa ? inp->get_k_idxs_swa() : inp->get_k_idxs();
 
         ggml_build_forward_expand(gf, mctx_cur->cpy_k(ctx0, k_cur, k_idxs, il));
@@ -3921,8 +3923,28 @@ static ggml_tensor * build_attn_iswa_impl(
     }
 
     ggml_tensor * q = q_cur;
-    ggml_tensor * k = use_kv_cur ? k_cur : mctx_cur->get_k(ctx0, il);
+    ggml_tensor * k = nullptr;
     ggml_tensor * v = use_kv_cur ? v_cur : mctx_cur->get_v(ctx0, il);
+
+    if (k_eq_v) {
+        // K = RoPE(V * k_norm_weight). Recompute from V to avoid storing K.
+        ggml_tensor * v_src = v;
+        const auto * kn = gctx.model.layers[il].attn_k_norm;
+        if (kn) {
+            // v_src has shape [head_dim, n_head_kv, n_kv]; k_norm is [head_dim]
+            ggml_tensor * kn_w = ggml_reshape_3d(ctx0, (ggml_tensor *) kn, kn->ne[0], 1, 1);
+            v_src = ggml_mul(ctx0, v_src, kn_w);
+        }
+        // contiguous positions 0..n_kv-1 (unified base cache)
+        const uint32_t n_kv_cur = mctx_cur->get_n_kv();
+        ggml_tensor * k_pos = ggml_cast(ctx0, ggml_arange(ctx0, 0.0f, (float) n_kv_cur, 1.0f), GGML_TYPE_I32);
+        k = gctx.build_rope(v_src, k_pos, il);
+        if (use_kv_cur) {
+            k = k_cur; // batch has already-rope'd K
+        }
+    } else {
+        k = use_kv_cur ? k_cur : mctx_cur->get_k(ctx0, il);
+    }
 
     // TurboQuant: pre-rotate Q when K is WHT-rotated
     if (k->type == GGML_TYPE_TURBO2_0 || k->type == GGML_TYPE_TURBO3_0 ||
